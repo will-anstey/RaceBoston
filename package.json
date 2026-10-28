@@ -1,0 +1,18 @@
+{
+  "name": "race-boston",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Open-world driving game set in Boston, MA, built from OpenStreetMap data.",
+  "type": "module",
+  "scripts": {
+    "fetch-osm": "node tools/fetch-osm.mjs",
+    "build-map": "node tools/build-map.mjs",
+    "start": "node tools/serve.mjs",
+    "test": "node tools/test-game.mjs"
+  },
+  "devDependencies": {
+    "earcut": "^3.2.4",
+    "puppeteer-core": "^25.16.0",
+    "three": "^0.186.1"
+  }
+}
