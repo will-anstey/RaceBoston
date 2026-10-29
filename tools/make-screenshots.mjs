@@ -15,7 +15,7 @@ try {
   await page.waitForFunction(() => window.RB && RB.game && RB.game.ready, { timeout: 120000 });
   await page.evaluate(() => {
     // Place the car on the named road segment nearest to (x, z).
-    window.placeOn = (pattern, x, z, reverse, back = 30) => {
+    window.placeOn = (pattern, x, z, reverse, back = 30, y = null) => {
       const g = RB.game, re = new RegExp(pattern);
       let best = null, bd = Infinity;
       for (const r of g.map.roads) {
@@ -23,13 +23,13 @@ try {
         for (let i = 0; i + 1 < r.nodes.length; i++) {
           const a = r.nodes[i], b = r.nodes[i + 1];
           const mx = (g.graph.nx(a) + g.graph.nx(b)) / 2, mz = (g.graph.nz(a) + g.graph.nz(b)) / 2;
-          const d = (mx - x) ** 2 + (mz - z) ** 2;
+          const d = (mx - x) ** 2 + (mz - z) ** 2 + (y === null ? 0 : ((g.map.nodeY[a] - y) * 30) ** 2);
           if (d < bd) { bd = d; best = { a, b, mx, mz }; }
         }
       }
       const [a, b] = reverse ? [best.b, best.a] : [best.a, best.b];
       const h = Math.atan2(g.graph.nx(b) - g.graph.nx(a), -(g.graph.nz(b) - g.graph.nz(a)));
-      g.placeCar(best.mx - Math.sin(h) * back, best.mz + Math.cos(h) * back, h);
+      g.placeCar(best.mx - Math.sin(h) * back, best.mz + Math.cos(h) * back, h, g.map.nodeY[a]);
     };
     RB.game.setSetting('traffic', 30);
     RB.game.begin('free');
@@ -38,7 +38,7 @@ try {
   const shots = [
     { file: 'screenshot-drive.jpg', road: '^Commonwealth Avenue$', x: -1100, z: 330, rev: true, tod: 'day', thr: 0.6, cam: 0 },
     { file: 'screenshot-bridge.jpg', road: '^Massachusetts Avenue$', x: -2050, z: 50, rev: false, tod: 'day', thr: 0.7, cam: 0 },
-    { file: 'screenshot-zakim.jpg', road: 'Fitzgerald', x: 300, z: -1640, rev: false, tod: 'sunset', thr: 0.8, cam: 1 },
+    { file: 'screenshot-zakim.jpg', road: 'Fitzgerald', x: 300, z: -1500, rev: false, tod: 'sunset', thr: 0.8, cam: 1, y: 19 },
     { file: 'screenshot-night.jpg', road: '^Boylston Street$', x: -900, z: 640, rev: false, tod: 'night', thr: 0.5, cam: 0 },
   ];
   for (const s of shots) {
@@ -47,13 +47,49 @@ try {
       g.inputOverride = null;
       g.setSetting('tod', s.tod);
       g.chase.mode = s.cam;
-      placeOn(s.road, s.x, s.z, s.rev);
+      placeOn(s.road, s.x, s.z, s.rev, 30, s.y ?? null);
       g.inputOverride = { throttle: s.thr };
     }, s);
     await sleep(3200);
     await page.screenshot({ path: path.join(docs, s.file), type: 'jpeg', quality: 86 });
     console.log('wrote', s.file, await page.evaluate(() => RB.game.hud.streetName.textContent));
   }
+  // Inside the Mass Pike tunnel under the Prudential.
+  await page.evaluate(() => {
+    const g = RB.game, ny = g.map.nodeY;
+    g.inputOverride = null;
+    g.setSetting('tod', 'day');
+    g.chase.mode = 0;
+    let best = null, bd = Infinity;
+    for (const r of g.map.roads) {
+      if (r.name !== 'Massachusetts Turnpike' || !r.tunnel) continue;
+      for (let i = 0; i + 1 < r.nodes.length; i++) {
+        const a = r.nodes[i], b = r.nodes[i + 1];
+        const d = (g.graph.nx(a) + 1250) ** 2 + (g.graph.nz(a) - 700) ** 2;
+        if (d < bd && g.graph.nx(b) > g.graph.nx(a)) { bd = d; best = [a, b]; }
+      }
+    }
+    const [a, b] = best;
+    g.placeCar(g.graph.nx(a), g.graph.nz(a), Math.atan2(g.graph.nx(b) - g.graph.nx(a), -(g.graph.nz(b) - g.graph.nz(a))), ny[a]);
+    g.inputOverride = { throttle: 0.7 };
+  });
+  await sleep(3200);
+  await page.screenshot({ path: path.join(docs, 'screenshot-tunnel.jpg'), type: 'jpeg', quality: 86 });
+  console.log('wrote screenshot-tunnel.jpg', await page.evaluate(() => RB.game.car.y.toFixed(1)));
+  // Landmarks from the air.
+  for (const [file, name, ox, oy, oz, ty, fov] of [['screenshot-fenway.jpg', 'Fenway Park', 170, 110, 150, 0, 55], ['screenshot-statehouse.jpg', 'Massachusetts State House', 25, 34, 150, 20, 50]]) {
+    await page.evaluate((name, ox, oy, oz, ty, fov) => {
+      const g = RB.game, l = g.map.landmarks.find((m) => m.name === name);
+      g.inputOverride = { brake: 1 };
+      g.state = 'paused'; g.menu.hide(); g.hud.show(false);
+      g.car.x = l.x; g.car.z = l.z;
+      g.camera.position.set(l.x + ox, oy, l.z + oz); g.camera.lookAt(l.x, ty, l.z); g.camera.fov = fov; g.camera.updateProjectionMatrix();
+    }, name, ox, oy, oz, ty, fov);
+    await sleep(1800);
+    await page.screenshot({ path: path.join(docs, file), type: 'jpeg', quality: 86 });
+    console.log('wrote', file);
+  }
+  await page.evaluate(() => { const g = RB.game; g.state = 'play'; g.hud.show(true); });
   // Map with a GPS route across town.
   await page.evaluate(() => {
     const g = RB.game;

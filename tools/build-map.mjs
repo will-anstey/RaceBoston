@@ -11,6 +11,7 @@ import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 import { PLAY_BBOX, WATER_BBOX, ORIGIN } from './config.mjs';
 import * as G from './geo.mjs';
+import { solveElevations, railProfile, ROAD_FLAGS } from './elevation.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const cacheDir = path.join(here, '.cache');
@@ -312,6 +313,10 @@ const LANE_W = [3.6, 3.5, 3.3, 3.2, 3.1, 3.0, 3.0, 2.9];
 
 const isTunnel = (t) => (t.tunnel && t.tunnel !== 'no') || t.location === 'underground' || parseFloat(t.layer) < 0;
 const isBridge = (t) => t.bridge && t.bridge !== 'no';
+// Drivable roads: real tunnels are kept (and get elevations); passages under buildings are not.
+const tunnelKind = (t) => (t.tunnel === 'building_passage' ? 'passage' : (t.tunnel && t.tunnel !== 'no') || t.location === 'underground' ? 'tunnel' : '');
+const layerOf = (t) => { const l = parseInt(t.layer, 10); return Number.isFinite(l) ? Math.max(-4, Math.min(4, l)) : 0; };
+const MAX_SEG = 15;
 
 function roadSpec(t) {
   const hw = t.highway;
@@ -389,21 +394,48 @@ function buildRoads(els) {
     const t = el.tags || {};
     const hw = t.highway;
     if (!el.geometry || el.geometry.length < 2) continue;
-    if (t.area === 'yes' || isTunnel(t) || t.indoor === 'yes') { skipped++; continue; }
+    if (t.area === 'yes' || t.indoor === 'yes') { skipped++; continue; }
     if (hw in DRIVE) {
       if (t.access === 'no' && hw === 'service') { skipped++; continue; }
+      const tk = tunnelKind(t);
+      if (tk === 'passage') { skipped++; continue; }
       const s = roadSpec(t);
+      let layer = layerOf(t);
+      const bridge = isBridge(t);
+      // Garage ramps / loading-dock tunnels on service roads are left out.
+      if (tk === 'tunnel' && s.cls >= 7) { skipped++; continue; }
+      const tunnel = tk === 'tunnel';
+      // Minor lanes tagged below grade are usually passages; keep them at grade.
+      if (!tunnel && layer < 0 && s.cls >= 5) layer = 0;
+      const depressed = !tunnel && !bridge && layer < 0;
       let ids = el.nodes, geom = el.geometry;
       if (s.oneway === -1) { ids = ids.slice().reverse(); geom = geom.slice().reverse(); s.oneway = 1; }
       for (const run of runs(geom)) {
-        const idx = run.map((k) => nodeOf(ids[k], geom[k]));
-        const flags = (s.oneway ? 1 : 0) | (isBridge(t) ? 2 : 0) | (s.isLink ? 4 : 0) | (s.roundabout ? 8 : 0);
+        // Densify long segments so elevations can vary smoothly along them.
+        const idx = [];
+        for (let j = 0; j < run.length; j++) {
+          if (j > 0) {
+            const a = proj(geom[run[j - 1]]), b = proj(geom[run[j]]);
+            const L = Math.hypot(b[0] - a[0], b[1] - a[1]);
+            const extra = Math.ceil(L / MAX_SEG) - 1;
+            for (let q = 1; q <= extra; q++) {
+              const f = q / (extra + 1);
+              idx.push(nodes.length / 2);
+              nodes.push(r1(a[0] + (b[0] - a[0]) * f), r1(a[1] + (b[1] - a[1]) * f));
+            }
+          }
+          idx.push(nodeOf(ids[run[j]], geom[run[j]]));
+        }
+        const F = ROAD_FLAGS;
+        const flags = (s.oneway ? F.ONEWAY : 0) | (bridge ? F.BRIDGE : 0) | (s.isLink ? F.LINK : 0) | (s.roundabout ? F.ROUNDABOUT : 0) |
+          (tunnel ? F.TUNNEL : 0) | (depressed ? F.DEPRESSED : 0);
         roads.push({
-          cls: s.cls, flags, lanes: s.lanes, width: s.width, shoulder: s.shoulder,
+          cls: s.cls, flags, lanes: s.lanes, width: s.width, shoulder: s.shoulder, layer,
           name: nameOf(roadName(t)), speed: parseInt(t.maxspeed, 10) || 0, nodes: idx, id: el.id,
         });
       }
     } else if (hw in PATHS || (hw === 'footway' && t.footway === 'crossing')) {
+      if (isTunnel(t)) { skipped++; continue; }
       if (t.footway === 'sidewalk' || t.footway === 'traffic_island' || t.level && t.level !== '0') { skipped++; continue; }
       const pts = el.geometry.map(proj).filter((p) => inBox(PLAY_M, p[0], p[1]));
       if (pts.length < 2) continue;
@@ -488,6 +520,34 @@ function buildingStyle(t, h, id) {
   return { color: pick(PALETTE.gray), style: 0 };
 }
 
+// Landmark styles (client renders these with custom textures / props).
+export const LANDMARK = {
+  FENWAY: 1, GREEN_MONSTER: 2, STATE_HOUSE: 3, HANCOCK: 4, PRUDENTIAL: 5, CUSTOM_HOUSE: 6, OLD_NORTH: 7,
+  TRINITY: 8, BUNKER_HILL: 9, CONSTITUTION: 10, FANEUIL: 11, QUINCY: 12, BPL: 13, TD_GARDEN: 14,
+  GREAT_DOME: 15, MOTHER_CHURCH: 16, OLD_STATE_HOUSE: 17, SYMPHONY: 18,
+};
+const LANDMARK_NAMES = [
+  [/^Massachusetts State House$/, LANDMARK.STATE_HOUSE], [/^200 Clarendon$/, LANDMARK.HANCOCK],
+  [/^Prudential Tower$/, LANDMARK.PRUDENTIAL], [/^Custom House Tower$/, LANDMARK.CUSTOM_HOUSE],
+  [/^Old North Church$/, LANDMARK.OLD_NORTH], [/^Trinity Church$/, LANDMARK.TRINITY],
+  [/^Bunker Hill Monument$/, LANDMARK.BUNKER_HILL], [/^USS Constitution$/, LANDMARK.CONSTITUTION],
+  [/^Faneuil Hall$/, LANDMARK.FANEUIL], [/^Quincy Market$/, LANDMARK.QUINCY],
+  [/^Boston Public Library$/, LANDMARK.BPL], [/^TD Garden$/, LANDMARK.TD_GARDEN],
+  [/^Great Dome$/, LANDMARK.GREAT_DOME], [/^First Church of Christ Scientist$/, LANDMARK.MOTHER_CHURCH],
+  [/^Old State House$/, LANDMARK.OLD_STATE_HOUSE], [/^Symphony Hall$/, LANDMARK.SYMPHONY],
+  [/^Green Monster$/, LANDMARK.GREEN_MONSTER],
+];
+const PITCHED = /gabled|hipped|pyramidal|gambrel|mansard|half-hipped|skillion/;
+
+// Fenway Park's stadium outline (leisure=stadium relation), if downloaded.
+const FENWAY_POLY = (() => {
+  const f = path.join(cacheDir, 'fenway.json');
+  if (!fs.existsSync(f)) return null;
+  const el = JSON.parse(fs.readFileSync(f, 'utf8')).elements.find((e) => e.type === 'relation');
+  return el ? polygonsOf(el)[0] || null : null;
+})();
+const inFenway = (x, z) => !!FENWAY_POLY && G.pointInPolygon(x, z, FENWAY_POLY);
+
 function buildBuildings(els) {
   const items = [];
   for (const el of els) {
@@ -514,6 +574,12 @@ function buildBuildings(els) {
     const st = buildingStyle(t, height, el.id);
     const col = parseColor(t['building:colour']);
     const roofCol = parseColor(t['roof:colour']);
+    const shape = (t['roof:shape'] || '').toLowerCase();
+    const dome = /dome|onion/.test(shape);
+    let roofH = parseLength(t['roof:height']);
+    if (!(roofH > 0) && (PITCHED.test(shape) || dome)) roofH = NaN; // decided per polygon below
+    let landmark = 0;
+    for (const [re, id] of LANDMARK_NAMES) if (re.test(t.name || '')) landmark = id;
     for (let poly of polygonsOf(el)) {
       poly = clipPolygon(poly, PLAY_M);
       if (!poly) continue;
@@ -521,10 +587,20 @@ function buildBuildings(els) {
       if (!poly) continue;
       const area = -G.signedAreaXZ(poly[0]);
       if (area < 6) continue;
+      // S3DB: height includes the roof. Spires get tall pyramids.
+      let rh = 0;
+      if (roofH > 0) rh = roofH;
+      else if (Number.isNaN(roofH)) {
+        const span = height - minH;
+        rh = dome ? Math.min(span * 0.5, Math.sqrt(area / Math.PI)) : shape === 'pyramidal' && area < 150 ? span * 0.6 : Math.min(5, span * 0.3);
+      }
+      rh = Math.min(rh, (height - minH) * 0.9);
+      const [cx, cz] = G.centroid(poly[0]);
       items.push({
         id: el.id, isPart, height, minH, poly, area,
-        color: col ?? st.color, roof: roofCol ?? -1, style: st.style,
-        roofShape: t['roof:shape'] || '', type,
+        color: col ?? st.color, hasColor: col != null, roof: roofCol ?? -1, style: st.style,
+        roofShape: shape, type, dome, roofH: rh,
+        landmark: landmark || (inFenway(cx, cz) ? LANDMARK.FENWAY : 0),
       });
     }
   }
@@ -549,22 +625,24 @@ function buildBuildings(els) {
     const [cx, cz] = G.centroid(p.poly[0]);
     for (const i of grid.get(cellKey(Math.floor(cx / CELL), Math.floor(cz / CELL))) || []) {
       const o = items[i];
-      if (o.hidden) continue;
       if (cx >= o.bb.minX && cx <= o.bb.maxX && cz >= o.bb.minZ && cz <= o.bb.maxZ && G.pointInPolygon(cx, cz, o.poly)) {
-        o.hidden = true;
-        hidden++;
-        // Parts inherit the outline colour if they have none of their own.
-        if (p.color == null) p.color = o.color;
+        o.partArea = (o.partArea || 0) + p.area;
+        // Parts inherit the outline's explicit colour and landmark identity.
+        if (!p.hasColor && o.hasColor) p.color = o.color;
+        if (!p.landmark && o.landmark) p.landmark = o.landmark;
       }
     }
   }
+  // S3DB says outlines with parts aren't rendered, but many outlines only have
+  // a part or two mapped (a dome, a tower): keep those so the building exists.
+  for (const o of items) if (!o.isPart && o.partArea && o.partArea >= o.area * 0.55) { o.hidden = true; hidden++; }
   const out = items.filter((b) => !b.hidden);
   log(`buildings: ${out.length} (hid ${hidden} outlines replaced by parts)`);
   return { buildings: out, grid, CELL };
 }
 
 // ==================================================================== AREAS
-const AREA = { park: 1, grass: 2, pitch: 3, golf: 4, cemetery: 5, wood: 6, playground: 7, track: 8, sand: 9, wetland: 10, garden: 11, railyard: 12, parking: 20, plaza: 21, pier: 22, fuel: 23 };
+const AREA = { park: 1, grass: 2, pitch: 3, golf: 4, cemetery: 5, wood: 6, playground: 7, track: 8, sand: 9, wetland: 10, garden: 11, railyard: 12, dirt: 13, parking: 20, plaza: 21, pier: 22, fuel: 23 };
 function areaTypeOf(t) {
   const l = t.leisure, u = t.landuse, n = t.natural;
   if (t.man_made === 'pier' || t.man_made === 'breakwater') return AREA.pier;
@@ -574,7 +652,7 @@ function areaTypeOf(t) {
   }
   if (t.amenity === 'fuel') return AREA.fuel;
   if (t.highway === 'pedestrian' || t.place === 'square' || t['area:highway']) return AREA.plaza;
-  if (l === 'pitch') return AREA.pitch;
+  if (l === 'pitch') return /dirt|clay|sand/.test(t.surface || '') ? AREA.dirt : AREA.pitch;
   if (l === 'track') return AREA.track;
   if (l === 'playground') return AREA.playground;
   if (l === 'golf_course') return AREA.golf;
@@ -583,7 +661,7 @@ function areaTypeOf(t) {
   if (u === 'cemetery' || t.amenity === 'grave_yard') return AREA.cemetery;
   if (u === 'forest' || n === 'wood' || n === 'scrub' || n === 'heath') return AREA.wood;
   if (u === 'grass' || u === 'meadow' || u === 'greenfield' || n === 'grassland') return AREA.grass;
-  if (n === 'sand' || n === 'beach') return AREA.sand;
+  if (n === 'sand' || n === 'beach') return t.layer ? AREA.dirt : AREA.sand;
   if (n === 'wetland') return AREA.wetland;
   if (u === 'railway') return AREA.railyard;
   return 0;
@@ -790,44 +868,40 @@ log('raster: base layers done');
 const { nodes } = roadData;
 const roadPts = (r) => r.nodes.map((n) => [nodes[2 * n], nodes[2 * n + 1]]);
 
-// Bridge railings: find the stretches of bridge ways that sit above water,
-// before roads are rasterized on top of the water bit.
+// ---- road elevations (bridges, ramps, trenches, tunnels)
 const SIDEWALK = 2.4;
 const hasSidewalk = (r) => r.cls >= 2 && r.cls <= 6 && !(r.flags & 4);
-for (const r of roadData.roads) {
-  if (!(r.flags & 2)) continue;
-  const pts = roadPts(r);
-  const spans = [];
-  let s = 0, open = null;
-  for (let i = 0; i + 1 < pts.length; i++) {
-    const a = pts[i], b = pts[i + 1];
-    const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
-    const steps = Math.max(1, Math.ceil(len / 2));
-    for (let k = 0; k < steps; k++) {
-      const t = (k + 0.5) / steps;
-      const x = a[0] + (b[0] - a[0]) * t, z = a[1] + (b[1] - a[1]) * t;
-      // Water under either edge of the deck counts.
-      const wet = (rasterAt(x, z) & B_WATER) && !(rasterAt(x, z) & B_PAVED);
-      const s0 = s + (len * k) / steps, s1 = s + (len * (k + 1)) / steps;
-      if (wet) { if (open) open[1] = s1; else { open = [s0, s1]; spans.push(open); } }
-      else open = null;
-    }
-    s += len;
-  }
-  // Merge tiny gaps, extend a little onto the banks, drop slivers.
-  const merged = [];
-  for (const sp of spans) {
-    const last = merged[merged.length - 1];
-    if (last && sp[0] - last[1] < 6) last[1] = sp[1];
-    else merged.push(sp.slice());
-  }
-  r.rail = merged.filter((sp) => sp[1] - sp[0] > 8).map((sp) => [r1(Math.max(0, sp[0] - 3)), r1(Math.min(s, sp[1] + 3))]);
-}
+const isWaterAt = (x, z) => !!(rasterAt(x, z) & B_WATER) && !(rasterAt(x, z) & B_PAVED);
+const { elev } = solveElevations(roadData, { isWater: isWaterAt, railLines: rail.filter((r) => !r.bridge).map((r) => r.pts), log });
 
 for (const b of buildings) if (b.minH < 3) rasterPolygon(b.poly, 'set', B_BLDG);
 for (const r of roadData.roads) {
+  if (r.flags & ROAD_FLAGS.TUNNEL) continue; // underground: trees and parks above are fine
   const pts = roadPts(r);
   rasterLine(pts, r.width / 2 + (hasSidewalk(r) ? SIDEWALK : 0.3), B_ROAD);
+}
+// Rail bridges: raise decorative tracks with simple trapezoid ramps, matching
+// an adjacent road bridge deck (e.g. the Red Line on the Longfellow) if any.
+const bridgeNodes = [];
+for (const r of roadData.roads) if (r.flags & ROAD_FLAGS.BRIDGE) for (const n of r.nodes) if (elev[n] > 0.5) bridgeNodes.push([nodes[2 * n], nodes[2 * n + 1], elev[n]]);
+for (const rl of rail) {
+  if (!rl.bridge) continue;
+  const dense = [];
+  for (let i = 0; i < rl.pts.length; i++) {
+    if (i) {
+      const a = rl.pts[i - 1], b = rl.pts[i];
+      const n = Math.ceil(Math.hypot(b[0] - a[0], b[1] - a[1]) / 10);
+      for (let k = 1; k < n; k++) dense.push([a[0] + ((b[0] - a[0]) * k) / n, a[1] + ((b[1] - a[1]) * k) / n]);
+    }
+    dense.push(rl.pts[i]);
+  }
+  let wet = false, road = false;
+  for (const p of dense) { if (isWaterAt(p[0], p[1])) wet = true; if (rasterAt(p[0], p[1]) & B_ROAD) road = true; }
+  rl.pts = dense;
+  const mid = dense[Math.floor(dense.length / 2)];
+  let match = 0;
+  for (const [x, z, e] of bridgeNodes) if (Math.abs(x - mid[0]) < 40 && Math.abs(z - mid[1]) < 40) match = Math.max(match, e);
+  rl.elev = railProfile(dense, match || (wet ? 3.0 : road ? 6.5 : 1.0));
 }
 for (const p of roadData.paths) rasterLine(p.pts, p.width / 2, B_PATH);
 for (const rl of rail) rasterLine(rl.pts, 2.0, B_RAIL);
@@ -851,22 +925,26 @@ log('raster: roads/buildings done');
   let blocked = 0, hidden = 0;
   for (const r of roadData.roads) {
     if (r.cls === 7) continue;
-    const elevated = (r.flags & 2) || r.cls <= 1;
+    // Tunnels and trenches pass under buildings; they don't make them hollow.
+    if (r.flags & (ROAD_FLAGS.TUNNEL | ROAD_FLAGS.DEPRESSED)) continue;
     const pts = roadPts(r);
     for (let i = 0; i + 1 < pts.length; i++) {
       const a = pts[i], b = pts[i + 1];
+      const ea = elev[r.nodes[i]], eb = elev[r.nodes[i + 1]];
+      if (Math.min(ea, eb) < -1) continue;
       const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
       const steps = Math.max(1, Math.ceil(len / 1.5));
       for (let k = 0; k <= steps; k++) {
         const x = a[0] + ((b[0] - a[0]) * k) / steps, z = a[1] + ((b[1] - a[1]) * k) / steps;
+        const e = ea + ((eb - ea) * k) / steps;
         for (const bi of grid.get(Math.floor(x / CELL) * 100003 + Math.floor(z / CELL)) || []) {
           const bd = buildings[bi];
-          if (bd.noCollide && (bd.hide || !elevated)) continue;
+          if (bd.hide) continue;
           if (x < bd.bb.minX || x > bd.bb.maxX || z < bd.bb.minZ || z > bd.bb.maxZ) continue;
           if (G.pointInPolygon(x, z, bd.poly)) {
             if (!bd.noCollide) { bd.noCollide = true; blocked++; }
-            // A flat world can't pass over buildings under elevated highways.
-            if (elevated && !bd.hide && bd.height < 40) { bd.hide = true; hidden++; }
+            // Elevated roads passing through a building: hide the building.
+            if (e > 2 && bd.height > e - 1.5 && bd.height < 40) { bd.hide = true; hidden++; }
           }
         }
       }
@@ -949,23 +1027,26 @@ const out = {
   },
   names: roadData.names,
   nodes: roadData.nodes,
-  // [class, flags, lanes, width*10, shoulder*10, nameIndex, speedLimitMph, [node...], [[s0,s1] railing spans]]
-  roads: roadData.roads.map((r) => [r.cls, r.flags, r.lanes, Math.round(r.width * 10), Math.round(r.shoulder * 10), r.name, r.speed, r.nodes, r.rail || []]),
+  // per-node elevation in decimeters (parallel to nodes)
+  elev: Array.from(elev, (e) => Math.round(e * 10)),
+  // [class, flags(1 oneway,2 bridge,4 link,8 roundabout,16 tunnel,32 depressed), lanes, width*10, shoulder*10, nameIndex, speedLimitMph, [node...], layer]
+  roads: roadData.roads.map((r) => [r.cls, r.flags, r.lanes, Math.round(r.width * 10), Math.round(r.shoulder * 10), r.name, r.speed, r.nodes, r.layer]),
   // [class, width*10, bridge, [x,z,...]]
   paths: roadData.paths.map((p) => [p.cls, Math.round(p.width * 10), p.bridge ? 1 : 0, flat(p.pts)]),
   piers: pierLines.map((p) => [Math.round(p.width * 10), flat(p.pts)]),
   crossings: roadData.crossings.map(flat),
-  // [height*10, minHeight*10, color, roofColor, style, flags(1=noCollide,2=part), [[outer], [hole]...]]
+  // [height*10, minHeight*10, color, roofColor, style, flags(1 noCollide,2 part,4 pitched,8 hidden,16 dome), [[outer], [hole]...], landmark, roofHeight*10]
   buildings: buildings.map((b) => [
     Math.round(b.height * 10), Math.round(b.minH * 10), b.color, b.roof, b.style,
-    (b.noCollide || b.minH >= 3 ? 1 : 0) | (b.isPart ? 2 : 0) | (/gabled|hipped|pyramidal|gambrel|mansard/.test(b.roofShape) ? 4 : 0) | (b.hide ? 8 : 0),
-    b.poly.map(flat),
+    (b.noCollide || b.minH >= 3 ? 1 : 0) | (b.isPart ? 2 : 0) | (PITCHED.test(b.roofShape) ? 4 : 0) | (b.hide ? 8 : 0) | (b.dome ? 16 : 0),
+    b.poly.map(flat), b.landmark || 0, Math.round((b.roofH || 0) * 10), /grandstand|bleachers/.test(b.type) ? 1 : 0,
   ]),
   land: land.map((p) => p.map(flat)),
   water: water.map((p) => p.map(flat)),
   // [type, [[outer], [hole]...]]
   areas: areas.map((a) => [a.type, a.poly.map(flat)]),
-  rail: rail.map((r) => [r.kind, r.bridge ? 1 : 0, flat(r.pts)]),
+  // [kind, bridge, [x,z,...], [elev*10 per point] (bridges only)]
+  rail: rail.map((r) => [r.kind, r.bridge ? 1 : 0, flat(r.pts), r.elev ? r.elev.map((e) => Math.round(e * 10)) : []]),
   trees,
   places,
   landmarks,

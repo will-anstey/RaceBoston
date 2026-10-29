@@ -3,7 +3,9 @@
 
 import { clamp } from './util.js';
 
-const GEARS = [0, 8, 16, 25, 35, 46];
+// Upshift speeds (m/s) for a 7-speed box that tops out around 200 mph.
+const GEARS = [0, 9, 18, 28, 40, 54, 70];
+const TOP = 92;
 
 export class AudioFX {
   constructor() {
@@ -79,7 +81,7 @@ export class AudioFX {
     let gear = 1;
     for (let i = 1; i < GEARS.length; i++) if (v > GEARS[i]) gear = i + 1;
     if (car.vF < -0.5) gear = 1;
-    const lo = GEARS[gear - 1], hi = GEARS[gear] ?? 62;
+    const lo = GEARS[gear - 1], hi = GEARS[gear] ?? TOP;
     const frac = clamp((v - lo) / (hi - lo), 0, 1);
     const throttle = active ? inp.throttle : 0;
     let rpm = 1000 + frac * 5200 + (gear === 1 ? 0 : 800 * (1 - frac));
@@ -95,8 +97,8 @@ export class AudioFX {
     this.eGain.gain.setTargetAtTime(active ? 0.09 + throttle * 0.09 + (car.boosting ? 0.05 : 0) : 0.0, t, 0.08);
     const sk = active ? clamp(car.skid, 0, 1) * clamp(car.speed / 8, 0, 1) : 0;
     this.sGain.gain.setTargetAtTime(sk * 0.16, t, 0.05);
-    this.wGain.gain.setTargetAtTime(active ? clamp(car.speed / 60, 0, 1) ** 2 * 0.22 : 0, t, 0.2);
-    this.wFilter.frequency.setTargetAtTime(250 + car.speed * 18, t, 0.2);
+    this.wGain.gain.setTargetAtTime(active ? clamp(car.speed / 85, 0, 1) ** 2 * 0.26 : 0, t, 0.2);
+    this.wFilter.frequency.setTargetAtTime(250 + car.speed * 14, t, 0.2);
     this.hGain.gain.setTargetAtTime(active && inp.horn ? 0.12 : 0, t, 0.02);
   }
 

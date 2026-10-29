@@ -17,9 +17,11 @@ import { Missions } from './missions.js';
 import { Traffic } from './traffic.js';
 import { Menu, CARS } from './menu.js';
 import { SkidMarks } from './effects.js';
+import { StreetSigns } from './signs.js';
+import { updateLandmarks } from './landmarks.js';
 import { clamp, smoothstep, loadJSON, saveJSON, nextFrame } from './util.js';
 
-const STEP = 1 / 120;
+const STEP = 1 / 150;
 const isTouch = matchMedia('(pointer: coarse)').matches;
 const DEFAULT_SETTINGS = {
   quality: isTouch ? 'medium' : 'high', traffic: 26, tod: 'day', metric: false,
@@ -59,7 +61,7 @@ class Game {
 
   async init() {
     const canvas = document.getElementById('view');
-    const renderer = (this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' }));
+    const renderer = (this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, stencil: true, powerPreference: 'high-performance' }));
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.shadowMap.enabled = true;
@@ -82,6 +84,7 @@ class Game {
     progress(0.85, 'Mapping obstacles');
     await nextFrame();
     this.collision = new CollisionWorld(map, world);
+    this.signs = new StreetSigns(map, graph, this.scene, this.collision);
     progress(0.9, 'Drawing the map');
     await nextFrame();
     const art = new MapArt(map, graph);
@@ -175,16 +178,19 @@ class Game {
     this.applyTimeOfDay();
   }
 
-  placeCar(x, z, heading) {
+  placeCar(x, z, heading, y = 0) {
     // Nudge along the heading until no collision circle overlaps a wall.
     const fx = Math.sin(heading), fz = -Math.cos(heading);
-    const out = {};
+    const out = {}, g = {};
+    // Probe from just above the requested height so a tunnel under a street
+    // (or a deck over one) is found rather than the other level.
     for (const d of [0, 1.5, -1.5, 3, -3, 5, -5, 8, -8]) {
       const px = x + fx * d, pz = z + fz * d;
-      const free = this.car.h.circles.every((o) => !this.collision.resolveCircle(px + fx * o, pz + fz * o, this.car.h.radius, out) || out.kind === 4);
+      const py = this.collision.groundHeight(px, pz, y + 0.2, g);
+      const free = this.car.h.circles.every((o) => !this.collision.resolveCircle(px + fx * o, pz + fz * o, this.car.h.radius, out, py) || out.kind === 4);
       if (free) { x = px; z = pz; break; }
     }
-    this.car.reset(x, z, heading);
+    this.car.reset(x, z, heading, this.collision.groundHeight(x, z, y + 0.2, g));
     this.sinking = 0;
     this.chase?.snap();
     this.updatePlayerModel();
@@ -193,9 +199,9 @@ class Game {
   // Put the car back on the nearest road, facing along it.
   respawn(useSafe = false) {
     const g = this.graph;
-    let x = this.car.x, z = this.car.z, h = this.car.heading;
-    if (useSafe && this.lastSafe) ({ x, z, h } = this.lastSafe);
-    const r = g.nearestRoad(x, z, 300, (rd) => rd.cls <= RC.LIVING) || g.nearestRoad(x, z, 3000);
+    let x = this.car.x, z = this.car.z, h = this.car.heading, y = this.car.y;
+    if (useSafe && this.lastSafe) ({ x, z, h, y } = this.lastSafe);
+    const r = g.nearestRoad3D(x, z, y, 300, (rd) => rd.cls <= RC.LIVING) || g.nearestRoad3D(x, z, y, 3000);
     if (r) {
       const road = this.map.roads[r.road];
       const a = road.nodes[r.seg], b = road.nodes[r.seg + 1];
@@ -205,8 +211,9 @@ class Game {
       x = r.x + Math.cos(hh) * off;
       z = r.z + Math.sin(hh) * off;
       h = hh;
+      y = r.y;
     }
-    this.placeCar(x, z, h);
+    this.placeCar(x, z, h, y);
   }
 
   onResize() {
@@ -295,9 +302,12 @@ class Game {
       this.chase.update(dt, this.car, this.collision);
     }
     this.updatePlayerModel();
-    this.sky.update(this.camera, this.state === 'menu' ? this.attractFocus : new THREE.Vector3(this.car.x, 0, this.car.z));
+    this.sky.update(this.camera, this.state === 'menu' ? this.attractFocus : new THREE.Vector3(this.car.x, this.car.y, this.car.z));
     this.updateHeadlight();
     this.updateVisibility(dt);
+    const focus = this.state === 'menu' && this.attractFocus ? this.attractFocus : this.car;
+    this.signs.update(dt, focus.x, focus.z);
+    updateLandmarks(this.world.landmarks, now / 1000);
     if (this.state === 'play' || this.state === 'paused' || this.state === 'results') this.updateHUD(dt);
     if (this.bigmap.open) this.bigmap.draw(this.car, { ...this.missions.overlays(), cars: this.traffic.positions() });
     this.audio.update(this.car, this.effectiveInput || this.input.state, playing && !this.sinking);
@@ -349,27 +359,28 @@ class Game {
       this.sinking += dt;
       car.vx *= 0.9; car.vz *= 0.9;
       if (this.sinking > 1.7) { this.respawn(true); this.hud.message('Back on dry land', '', 1200); }
-    } else if (cw.isWater(car.x, car.z)) {
+    } else if (!car.airborne && cw.isWater(car.x, car.z, car.y, car.onDeck)) {
       this.sinking = 0.001;
       this.audio.splash();
       this.hud.message('Splash!', 'Into the drink', 1500, '#7fc8ff');
     } else {
       const surf = cw.surfaceAt(car.x, car.z);
-      if (surf & SURF.BLDG) { this.stuckIn = (this.stuckIn || 0) + dt; if (this.stuckIn > 0.4) { this.stuckIn = 0; this.respawn(); } }
+      if (surf & SURF.BLDG && car.y > -1 && !car.onDeck) { this.stuckIn = (this.stuckIn || 0) + dt; if (this.stuckIn > 0.4) { this.stuckIn = 0; this.respawn(); } }
       else this.stuckIn = 0;
       this.safeTimer -= dt;
-      if (this.safeTimer <= 0 && surf & SURF.ROAD && car.speed > 1.5) {
+      if (this.safeTimer <= 0 && !car.airborne && (surf & SURF.ROAD || car.onDeck) && car.speed > 1.5) {
         this.safeTimer = 0.5;
-        this.lastSafe = { x: car.x, z: car.z, h: car.heading };
+        this.lastSafe = { x: car.x, z: car.z, h: car.heading, y: car.y };
       }
     }
-    this.skids.update(car, !this.sinking && !!(cw.surfaceAt(car.x, car.z) & (SURF.ROAD | SURF.PAVED)));
+    this.skids.update(car, !this.sinking && !car.airborne && (car.onDeck || !!(cw.surfaceAt(car.x, car.z) & (SURF.ROAD | SURF.PAVED))));
     this.missions.update(dt);
   }
 
   handleImpacts(dt) {
     this.impactCooldown -= dt;
-    const imp = this.frameImpact || 0;
+    let imp = this.frameImpact || 0;
+    if (this.car.landImpact > 6) { imp = Math.max(imp, this.car.landImpact * 0.8); this.car.landImpact = 0; }
     if (imp > 2.2 && this.impactCooldown <= 0) {
       this.impactCooldown = 0.18;
       this.audio.crash(imp / 18);
@@ -393,8 +404,8 @@ class Game {
     const m = this.playerModel, c = this.car;
     if (!m) return;
     const sinkY = this.sinking ? -Math.min(1.6, this.sinking * 1.1) : 0;
-    m.root.position.set(c.x, sinkY, c.z);
-    m.root.rotation.set(this.sinking ? Math.min(0.25, this.sinking * 0.2) : 0, -c.heading, 0, 'YXZ');
+    m.root.position.set(c.x, c.y + sinkY, c.z);
+    m.root.rotation.set((this.sinking ? Math.min(0.25, this.sinking * 0.2) : 0) + c.slopePitch, -c.heading, 0, 'YXZ');
     m.body.rotation.set(c.pitch, 0, c.roll);
     for (const w of m.wheels) {
       if (w.front) w.pivot.rotation.y = -c.steer;
@@ -412,10 +423,10 @@ class Game {
     this.headlight.visible = on;
     this.carGlow.visible = on;
     this.carGlow.intensity = 60 * this.sky.nightAmount;
-    this.carGlow.position.set(c.x - c.fx * 1.5, 4.2, c.z - c.fz * 1.5);
+    this.carGlow.position.set(c.x - c.fx * 1.5, c.y + 4.2, c.z - c.fz * 1.5);
     if (!on) return;
-    this.headlight.position.set(c.x + c.fx * 2.7, 0.75, c.z + c.fz * 2.7);
-    this.headlight.target.position.set(c.x + c.fx * 24, 0, c.z + c.fz * 24);
+    this.headlight.position.set(c.x + c.fx * 2.7, c.y + 0.75, c.z + c.fz * 2.7);
+    this.headlight.target.position.set(c.x + c.fx * 24, c.y, c.z + c.fz * 24);
     this.headlight.target.updateMatrixWorld();
   }
 
@@ -461,7 +472,7 @@ class Game {
 
   updateLocation(dt) {
     const c = this.car, map = this.map;
-    const r = this.graph.nearestRoad(c.x, c.z, 30);
+    const r = this.graph.nearestRoad3D(c.x, c.z, c.y, 30);
     let name = '';
     if (r) {
       const road = map.roads[r.road];
@@ -494,7 +505,8 @@ class Game {
     const c = this.car;
     const info = this.renderer.info.render;
     return {
-      state: this.state, mode: this.missions.mode, x: c.x, z: c.z, heading: c.heading, speed: c.speed, vF: c.vF, vR: c.vR,
+      state: this.state, mode: this.missions.mode, x: c.x, z: c.z, y: c.y, heading: c.heading, speed: c.speed, vF: c.vF, vR: c.vR,
+      airborne: c.airborne, onDeck: c.onDeck, inCut: c.inCut,
       boost: c.boost, sinking: this.sinking, impact: this.frameImpact, fps: Math.round(this.fps), calls: info.calls, tris: info.triangles,
       street: this.hud.streetName.textContent, area: this.hud.streetArea.textContent, traffic: this.traffic.cars.length,
       race: this.missions.race ? { next: this.missions.race.next, time: this.missions.race.time, started: this.missions.race.started, done: this.missions.race.done } : null,
@@ -507,7 +519,7 @@ class Game {
 const game = new Game();
 window.RB = { game };
 game.init().catch((err) => {
-  console.error(err);
+  console.error(err && err.stack ? err.stack : err);
   const t = document.getElementById('load-text');
   t.textContent = 'Failed to start: ' + err.message + ' (serve this folder over http, e.g. python3 -m http.server)';
   t.style.color = '#ff8a8a';

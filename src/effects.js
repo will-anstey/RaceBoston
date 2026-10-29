@@ -6,10 +6,10 @@ export class SkidMarks {
   constructor(scene, count = 900) {
     const g = new THREE.PlaneGeometry(0.24, 1);
     g.rotateX(-Math.PI / 2);
-    const m = new THREE.MeshBasicMaterial({ color: 0x0d0d0f, transparent: true, opacity: 0.5, depthWrite: false });
+    const m = new THREE.MeshBasicMaterial({ color: 0x0d0d0f, transparent: true, opacity: 0.5, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -8 });
     this.mesh = new THREE.InstancedMesh(g, m, count);
     this.mesh.count = 0;
-    this.mesh.renderOrder = -27;
+    this.mesh.renderOrder = 1;
     this.mesh.frustumCulled = false;
     this.mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     scene.add(this.mesh);
@@ -40,7 +40,7 @@ export class SkidMarks {
         if (L < 0.4) continue;
         if (L < 6) {
           this._q.setFromAxisAngle(this._up, Math.atan2(dx, dz));
-          this._m.compose(this._p.set((x + prev[0]) / 2, 0.02, (z + prev[1]) / 2), this._q, this._s.set(1, 1, L + 0.05));
+          this._m.compose(this._p.set((x + prev[0]) / 2, car.y + (car.onDeck ? 0.08 : 0.03), (z + prev[1]) / 2), this._q, this._s.set(1, 1, L + 0.05));
           this.mesh.setMatrixAt(this.i, this._m);
           this.i = (this.i + 1) % this.n;
           this.mesh.count = Math.max(this.mesh.count, this.i === 0 ? this.n : this.i);

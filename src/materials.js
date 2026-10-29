@@ -183,9 +183,10 @@ export function makeBuildingMaterial() {
 // ------------------------------------------------------------------- roads
 // uv = (lateral meters from centreline, meters along road)
 // aRoad = (halfWidth, lanes, style, shoulder); aMark = 1 where markings allowed.
-export function makeRoadMaterial() {
+export function makeRoadMaterial({ tunnel = false } = {}) {
   const m = new THREE.MeshStandardMaterial({ color: 0x3a3b3f, roughness: 0.92, metalness: 0, flatShading: true });
-  return patch(m, 'rb-road', {
+  if (tunnel) m.defines = { RB_TUNNEL: '' };
+  return patch(m, tunnel ? 'rb-road-tunnel' : 'rb-road', {
     constNormal: true,
     vPars: 'attribute vec4 aRoad; attribute float aMark; attribute vec2 aUV; varying vec4 vRoad; varying float vMark; varying vec2 vRUV;',
     vMain: 'vRoad = aRoad; vMark = aMark; vRUV = aUV;',
@@ -241,6 +242,51 @@ export function makeRoadMaterial() {
           totalEmissiveRadiance += col * vec3(1.0, 0.8, 0.55) * pool * side * uNight * 1.6;
           totalEmissiveRadiance += col * vec3(0.55, 0.6, 0.75) * uNight * 0.12;
         }
+        #ifdef RB_TUNNEL
+          // Tunnel: little daylight, sodium lamp pools every 9 m.
+          diffuseColor.rgb *= 0.3;
+          float tk = fract(v / 9.0) - 0.5;
+          totalEmissiveRadiance += col * vec3(1.0, 0.78, 0.5) * (0.18 + 1.6 * exp(-tk * tk * 70.0));
+        #endif
+      }
+    `,
+  });
+}
+
+// Depth-tested variant of a flat-layer material for elevated / sunken roads.
+export function as3D(mat) {
+  mat.depthWrite = true;
+  mat.polygonOffset = true;
+  mat.polygonOffsetFactor = -1;
+  mat.polygonOffsetUnits = -4;
+  return mat;
+}
+
+// Tiled tunnel walls and ceiling with rows of lamps.
+// aUV = (meters along, height above road); ceiling uses v >= 8.
+export function makeTunnelMaterial() {
+  // Front-facing only: walls face the road and the ceiling faces down, so
+  // nothing of the tunnel shows from above through openings in the ground.
+  const m = new THREE.MeshStandardMaterial({ color: 0xd8d4ca, roughness: 0.55, metalness: 0, flatShading: true });
+  return patch(m, 'rb-tunnel', {
+    constNormal: true,
+    vPars: 'attribute vec2 aUV; varying vec2 vRUV;',
+    vMain: 'vRUV = aUV;',
+    fPars: 'varying vec2 vRUV;',
+    fMain: /* glsl */ `
+      {
+        float u = vRUV.x, v = vRUV.y;
+        float fu = max(fwidth(u), 0.002), fv = max(fwidth(v), 0.002);
+        float detail = 1.0 - smoothstep(0.05, 0.25, max(fu, fv));
+        float tile = rbLine(fract(u / 1.2) - 0.5, 0.47, fu / 1.2) * rbLine(fract(v / 0.6) - 0.5, 0.44, fv / 0.6);
+        vec3 col = diffuseColor.rgb * mix(0.82, 1.0, mix(0.6, tile, detail));
+        col *= mix(0.45, 1.0, smoothstep(0.0, 1.4, v));          // road grime
+        col = mix(col, vec3(0.75, 0.62, 0.2), rbLine(v - 1.1, 0.12, fv) * step(v, 7.0)); // safety stripe
+        diffuseColor.rgb = col * 0.38;
+        float lampWall = rbLine(fract(u / 8.0) - 0.5, 0.12, fu / 8.0) * rbLine(v - 4.7, 0.1, fv);
+        float lampCeil = rbLine(fract(u / 6.0) - 0.5, 0.2, fu / 6.0) * rbLine(v - 10.0, 0.25, fv);
+        totalEmissiveRadiance += vec3(1.0, 0.82, 0.55) * (lampWall + lampCeil) * 3.5;
+        totalEmissiveRadiance += col * 0.08;
       }
     `,
   });
@@ -248,6 +294,9 @@ export function makeRoadMaterial() {
 
 // uv.x = lateral distance, aSide = road half width (curb position)
 export function makeSidewalkMaterial() {
+  return makeSidewalkMaterialImpl();
+}
+function makeSidewalkMaterialImpl() {
   const m = new THREE.MeshStandardMaterial({ color: 0xbdb8ae, roughness: 0.95, metalness: 0, flatShading: true });
   return patch(m, 'rb-sidewalk', {
     constNormal: true,
@@ -297,6 +346,9 @@ export function makeCrosswalkMaterial() {
 }
 
 export function makeRailMaterial() {
+  return makeRailMaterialImpl();
+}
+function makeRailMaterialImpl() {
   const m = new THREE.MeshStandardMaterial({ color: 0x6c645c, roughness: 0.95, metalness: 0, flatShading: true });
   return patch(m, 'rb-rail', {
     constNormal: true,

@@ -37,7 +37,7 @@ export async function launch({ width = 1280, height = 720, gpu = process.env.GPU
   ];
   if (gpu === 'swiftshader') args.push('--use-angle=swiftshader', '--enable-unsafe-swiftshader');
   else if (gpu === 'metal') args.push('--use-angle=metal', '--enable-unsafe-webgpu');
-  const browser = await puppeteer.launch({ executablePath: exe, headless: 'new', args, defaultViewport: { width, height } });
+  const browser = await puppeteer.launch({ executablePath: exe, headless: 'new', args, defaultViewport: { width, height }, protocolTimeout: 900000 });
   const page = await browser.newPage();
   const logs = [];
   page.on('console', (m) => logs.push(`[${m.type()}] ${m.text()}`));

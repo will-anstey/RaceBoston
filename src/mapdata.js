@@ -5,7 +5,14 @@ export const RC = { MOTORWAY: 0, TRUNK: 1, PRIMARY: 2, SECONDARY: 3, TERTIARY: 4
 
 export const AREA = {
   PARK: 1, GRASS: 2, PITCH: 3, GOLF: 4, CEMETERY: 5, WOOD: 6, PLAYGROUND: 7, TRACK: 8, SAND: 9,
-  WETLAND: 10, GARDEN: 11, RAILYARD: 12, PARKING: 20, PLAZA: 21, PIER: 22, FUEL: 23,
+  WETLAND: 10, GARDEN: 11, RAILYARD: 12, DIRT: 13, PARKING: 20, PLAZA: 21, PIER: 22, FUEL: 23,
+};
+
+// Landmark ids assigned by tools/build-map.mjs.
+export const LANDMARK = {
+  FENWAY: 1, GREEN_MONSTER: 2, STATE_HOUSE: 3, HANCOCK: 4, PRUDENTIAL: 5, CUSTOM_HOUSE: 6, OLD_NORTH: 7,
+  TRINITY: 8, BUNKER_HILL: 9, CONSTITUTION: 10, FANEUIL: 11, QUINCY: 12, BPL: 13, TD_GARDEN: 14,
+  GREAT_DOME: 15, MOTHER_CHURCH: 16, OLD_STATE_HOUSE: 17, SYMPHONY: 18,
 };
 
 export const SIDEWALK_W = 2.4;
@@ -46,33 +53,36 @@ const ring = (a) => Float32Array.from(a);
 function decode(raw) {
   const names = raw.names;
   const roads = raw.roads.map((r, id) => {
-    const [cls, flags, lanes, w10, sh10, nameIdx, speed, nodes, rail] = r;
+    const [cls, flags, lanes, w10, sh10, nameIdx, speed, nodes, layer] = r;
     return {
-      id, cls, lanes,
+      id, cls, lanes, layer: layer || 0,
       oneway: !!(flags & 1), bridge: !!(flags & 2), link: !!(flags & 4), roundabout: !!(flags & 8),
+      tunnel: !!(flags & 16), depressed: !!(flags & 32),
       width: w10 / 10, shoulder: sh10 / 10,
       name: names[nameIdx] || '',
       speedLimit: speed,
       nodes: Int32Array.from(nodes),
-      rail: rail || [],
     };
   });
+  const nodeY = new Float32Array(raw.nodes.length / 2);
+  if (raw.elev) for (let i = 0; i < nodeY.length; i++) nodeY[i] = raw.elev[i] / 10;
   return {
     meta: raw.meta,
     nodes: Float32Array.from(raw.nodes),
+    nodeY,
     roads,
     paths: raw.paths.map(([cls, w10, bridge, pts]) => ({ cls, width: w10 / 10, bridge: !!bridge, pts: ring(pts) })),
     piers: (raw.piers || []).map(([w10, pts]) => ({ width: w10 / 10, pts: ring(pts) })),
     crossings: raw.crossings.map(ring),
-    buildings: raw.buildings.map(([h10, m10, color, roof, style, flags, rings]) => ({
+    buildings: raw.buildings.map(([h10, m10, color, roof, style, flags, rings, landmark, roofH10, stands]) => ({
       h: h10 / 10, minH: m10 / 10, color, roof, style,
-      solid: !(flags & 1) && !(flags & 8), part: !!(flags & 2), pitched: !!(flags & 4), hidden: !!(flags & 8),
-      rings: rings.map(ring),
+      solid: !(flags & 1) && !(flags & 8), part: !!(flags & 2), pitched: !!(flags & 4), hidden: !!(flags & 8), dome: !!(flags & 16),
+      rings: rings.map(ring), landmark: landmark || 0, roofH: (roofH10 || 0) / 10, stands: !!stands,
     })),
     land: raw.land.map((p) => p.map(ring)),
     water: raw.water.map((p) => p.map(ring)),
     areas: raw.areas.map(([type, p]) => ({ type, rings: p.map(ring) })),
-    rail: raw.rail.map(([kind, bridge, pts]) => ({ kind, bridge: !!bridge, pts: ring(pts) })),
+    rail: raw.rail.map(([kind, bridge, pts, elev]) => ({ kind, bridge: !!bridge, pts: ring(pts), ys: elev && elev.length ? Float32Array.from(elev, (e) => e / 10) : null })),
     trees: Float32Array.from(raw.trees),
     places: raw.places.map(([name, x, z, rank]) => ({ name, x, z, rank })),
     landmarks: raw.landmarks.map(([name, kind, x, z, node]) => ({ name, kind, x, z, node })),

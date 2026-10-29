@@ -172,7 +172,7 @@ export class RoadGraph {
 
   // Nearest main-network node; maxClass limits to bigger roads (e.g. RC.LIVING).
   // legal=true restricts to the strongly connected one-way-legal network.
-  nearestNode(x, z, maxClass = RC.SERVICE, radius = 400, legal = false) {
+  nearestNode(x, z, maxClass = RC.SERVICE, radius = 400, legal = false, filter = null, y = null) {
     for (let r = 60; r <= radius * 2; r *= 2) {
       const n = this.nodeGrid.query(x, z, r);
       let best = -1, bd = Infinity;
@@ -181,7 +181,9 @@ export class RoadGraph {
         const node = this.nodeGrid.pts[3 * p + 2];
         if (this.nodeClass[node] > maxClass) continue;
         if (legal && !this.inSCC[node]) continue;
-        const d = (this.nodeGrid.pts[3 * p] - x) ** 2 + (this.nodeGrid.pts[3 * p + 1] - z) ** 2;
+        if (filter && !filter(node)) continue;
+        let d = (this.nodeGrid.pts[3 * p] - x) ** 2 + (this.nodeGrid.pts[3 * p + 1] - z) ** 2;
+        if (y !== null) d += ((this.map.nodeY[node] - y) * 4) ** 2;
         if (d < bd) { bd = d; best = node; }
       }
       if (best >= 0) return best;
@@ -196,6 +198,30 @@ export class RoadGraph {
     const i = g.nearest(x, z, maxDist, filter ? (s) => filter(this.map.roads[g.meta[s]]) : null, out);
     if (i < 0) return null;
     return { road: g.meta[i], seg: g.meta2[i], t: out.t, x: out.x, z: out.z, dist: out.dist };
+  }
+
+  // Nearest road segment preferring ones at a similar height to y (so the
+  // street name / respawn picks the tunnel you're in, not the street above).
+  nearestRoad3D(x, z, y, maxDist = 40, filter) {
+    const g = this.segGrid, s = g.segs, ny = this.map.nodeY, roads = this.map.roads;
+    const n = g.query(x, z, maxDist);
+    let best = null, bs = Infinity;
+    for (let k = 0; k < n; k++) {
+      const i = g.result[k];
+      const road = roads[g.meta[i]];
+      if (filter && !filter(road)) continue;
+      const ax = s[4 * i], az = s[4 * i + 1], bx = s[4 * i + 2], bz = s[4 * i + 3];
+      const dx = bx - ax, dz = bz - az, l2 = dx * dx + dz * dz || 1e-9;
+      const t = Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / l2));
+      const px = ax + dx * t, pz = az + dz * t;
+      const d = Math.hypot(x - px, z - pz);
+      if (d > maxDist) continue;
+      const seg = g.meta2[i];
+      const ry = ny[road.nodes[seg]] + (ny[road.nodes[seg + 1]] - ny[road.nodes[seg]]) * t;
+      const score = d * d + ((ry - y) * 4) ** 2;
+      if (score < bs) { bs = score; best = { road: g.meta[i], seg, t, x: px, z: pz, dist: d, y: ry }; }
+    }
+    return best;
   }
 
   // A* route between nodes; returns node index array or null.

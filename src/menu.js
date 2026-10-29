@@ -5,7 +5,7 @@ import { formatTime, formatDistance } from './util.js';
 import { esc } from './hud.js';
 
 export const CARS = [
-  { id: 'coupe', model: 'coupe', handling: 'coupe', name: 'Sports Coupe', color: 0xc8102e, desc: 'Quick, grippy, loves the Pike.' },
+  { id: 'coupe', model: 'coupe', handling: 'coupe', name: 'Sports Coupe', color: 0xc8102e, desc: '200 mph flat out, 0-60 in 3.3 s. Loves the Pike.' },
   { id: 'taxi', model: 'taxi', handling: 'taxi', name: 'Boston Cab', color: 0xf2c12e, desc: 'Balanced. Knows every shortcut.' },
   { id: 'suv', model: 'suv', handling: 'suv', name: 'Townie SUV', color: 0x1f3d6e, desc: 'Heavy and stable. Wins every merge.' },
 ];

@@ -119,7 +119,7 @@ export class Missions {
   _placeMarker(m, p, color) {
     if (!p) { m.visible = false; return; }
     m.visible = true;
-    m.position.set(p.x, 0, p.z);
+    m.position.set(p.x, p.y || 0, p.z);
     if (color !== undefined) m.material.uniforms.uColor.value.setHex(color);
   }
 
@@ -151,7 +151,7 @@ export class Missions {
     if ((off > 30 && this.routeTimer <= 0) || !this.route) {
       this.routeTimer = 1.2;
       const g = this.g.graph;
-      const from = g.nearestNode(car.x, car.z, RC.SERVICE);
+      const from = g.nearestNode(car.x, car.z, RC.SERVICE, 400, false, null, car.y);
       const to = g.nearestNode(this.routeTarget.x, this.routeTarget.z, RC.LIVING, 400, true);
       const path = g.route(from, to);
       if (path) {
@@ -210,8 +210,9 @@ export class Missions {
     if (!l) return null;
     const g = this.g.graph;
     let n = l.node;
-    if (n < 0 || !g.inSCC[n]) n = g.nearestNode(l.x, l.z, RC.LIVING, 400, true);
-    return { x: g.nx(n), z: g.nz(n), node: n, name };
+    const atGrade = (k) => Math.abs(this.g.map.nodeY[k]) < 0.5;
+    if (n < 0 || !g.inSCC[n] || !atGrade(n)) n = g.nearestNode(l.x, l.z, RC.LIVING, 400, true, atGrade);
+    return { x: g.nx(n), z: g.nz(n), y: this.g.map.nodeY[n], node: n, name };
   }
 
   // Precompute route length and medal times for a race.
@@ -285,14 +286,14 @@ export class Missions {
     }
     for (let k = 0; k < 60; k++) {
       const a = rnd() * Math.PI * 2, d = minD + rnd() * (maxD - minD);
-      const n = g.nearestNode(fromX + Math.sin(a) * d, fromZ - Math.cos(a) * d, RC.RESIDENTIAL, 200, true);
+      const n = g.nearestNode(fromX + Math.sin(a) * d, fromZ - Math.cos(a) * d, RC.RESIDENTIAL, 200, true, (k) => Math.abs(map.nodeY[k]) < 0.5);
       if (n < 0) continue;
       const x = g.nx(n), z = g.nz(n);
       const dd = Math.hypot(x - fromX, z - fromZ);
       if (dd < minD * 0.8 || dd > maxD * 1.2) continue;
       const road = g.nearestRoad(x, z, 5);
       const name = road ? map.roads[road.road].name : '';
-      return { x, z, node: n, label: name || 'the corner' };
+      return { x, z, y: map.nodeY[n], node: n, label: name || 'the corner' };
     }
     return null;
   }
@@ -365,7 +366,7 @@ export class Missions {
       }
     } else r.time += dt;
     const target = r.stops[r.next];
-    if (r.started && Math.hypot(car.x - target.x, car.z - target.z) < CP_RADIUS) {
+    if (r.started && Math.hypot(car.x - target.x, car.z - target.z) < CP_RADIUS && Math.abs(car.y - (target.y || 0)) < 6) {
       if (r.next === r.stops.length - 1) return this._finishRace();
       r.next++;
       g.audio.checkpoint();
@@ -409,7 +410,7 @@ export class Missions {
     if (g.car.impact > 6) t.crashes++;
     const target = t.stage === 'pickup' ? t.pickup : t.drop;
     const d = Math.hypot(car.x - target.x, car.z - target.z);
-    if (d < 12 && car.speed < 3.5) {
+    if (d < 12 && car.speed < 3.5 && Math.abs(car.y - (target.y || 0)) < 4) {
       t.boardTimer += dt;
       if (t.boardTimer > 0.6) {
         t.boardTimer = 0;
@@ -477,7 +478,7 @@ export class Missions {
     const na = cur + wrapAngle(ang - cur) * Math.min(1, dt * 8);
     this.arrow.userData.ang = na;
     // Hover just ahead of the roof, tilted toward the chase camera.
-    this.arrow.position.set(car.x + car.fx * 2.2, 2.25 + Math.sin(performance.now() / 300) * 0.08, car.z + car.fz * 2.2);
+    this.arrow.position.set(car.x + car.fx * 2.2, car.y + 2.25 + Math.sin(performance.now() / 300) * 0.08, car.z + car.fz * 2.2);
     this.arrow.rotation.set(0, -na, 0, 'YXZ');
     this.arrow.rotateX(0.55);
     const col = this.mode === 'taxi' ? (this.taxi.stage === 'pickup' ? 0x4dff88 : 0x5ac8ff) : this.mode === 'free' ? 0xa35cff : 0xffc93c;

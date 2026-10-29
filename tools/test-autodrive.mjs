@@ -50,7 +50,7 @@ try {
           st.stuck = 0; st.reverse = 1.1; st.revSteer = -Math.sign(d || 1);
           // Record what we are stuck on.
           const o = {}; let kinds = [];
-          for (const off of c.h.circles) if (g.collision.resolveCircle(c.x + c.fx * off, c.z + c.fz * off, c.h.radius + 0.4, o)) kinds.push(['', 'building', 'railing', 'tree', 'bounds'][o.kind]);
+          for (const off of c.h.circles) if (g.collision.resolveCircle(c.x + c.fx * off, c.z + c.fz * off, c.h.radius + 0.4, o)) kinds.push(['', 'building', 'railing', 'tree', 'bounds', 'traffic', 'cut wall', 'tunnel wall'][o.kind] || 'kind ' + o.kind);
           const tr = g.traffic.cars.some((t) => Math.hypot(t.x - c.x, t.z - c.z) < 7);
           (window.__stuckLog = window.__stuckLog || []).push(`${c.x.toFixed(0)},${c.z.toFixed(0)} ${kinds.join('/') || (tr ? 'traffic' : 'nothing?')} [${g.hud.streetName.textContent}]`);
         }

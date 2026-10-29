@@ -159,8 +159,15 @@ export class MapArt {
     ctx.fillStyle = COLORS.building;
     for (const bd of map.buildings) { if (bd.hidden) continue; this._poly(ctx, bd.rings); ctx.fill('evenodd'); }
     const nodes = map.nodes;
-    const roads = map.roads.slice().sort((a, c) => c.cls - a.cls);
     const rp = (r) => { const a = new Float32Array(r.nodes.length * 2); r.nodes.forEach((n, i) => { a[2 * i] = nodes[2 * n]; a[2 * i + 1] = nodes[2 * n + 1]; }); return a; };
+    // Tunnels first (dashed, under everything), then surface roads, then raised decks on top.
+    const maxY = (r) => { let m = 0; for (const n of r.nodes) m = Math.max(m, map.nodeY[n]); return m; };
+    ctx.save();
+    ctx.setLineDash([6, 5]);
+    ctx.globalAlpha = 0.55;
+    for (const r of map.roads) if (r.tunnel) line(rp(r), Math.max(1.5, r.width / mpp * 0.7), roadColor(r.cls));
+    ctx.restore();
+    const roads = map.roads.filter((r) => !r.tunnel).sort((a, c) => (maxY(a) > 1) - (maxY(c) > 1) || c.cls - a.cls);
     for (const r of roads) line(rp(r), (r.width + 2) / mpp, COLORS.roadCase);
     for (const r of roads) line(rp(r), r.width / mpp, roadColor(r.cls));
   }
@@ -240,13 +247,28 @@ export class Minimap {
     const n = sg.query(px, pz, E);
     ctx.lineCap = 'round';
     const passes = [[RC.SERVICE, RC.SERVICE, COLORS.service], [RC.TERTIARY, RC.LIVING, COLORS.minor], [RC.PRIMARY, RC.SECONDARY, COLORS.primary], [RC.TRUNK, RC.TRUNK, COLORS.trunk], [RC.MOTORWAY, RC.MOTORWAY, COLORS.motorway]];
+    // Tunnels: dashed, only near the player.
+    ctx.save();
+    ctx.setLineDash([4 / s, 3 / s]);
+    ctx.globalAlpha = 0.6;
+    ctx.beginPath();
+    for (let k = 0; k < n; k++) {
+      const i = sg.result[k];
+      if (!roads[sg.meta[i]].tunnel) continue;
+      ctx.moveTo(segs[4 * i], segs[4 * i + 1]);
+      ctx.lineTo(segs[4 * i + 2], segs[4 * i + 3]);
+    }
+    ctx.strokeStyle = COLORS.trunk;
+    ctx.lineWidth = Math.max(5, 2.2 / s);
+    ctx.stroke();
+    ctx.restore();
     for (const [c0, c1, color] of passes) {
       ctx.beginPath();
       let w = 0;
       for (let k = 0; k < n; k++) {
         const i = sg.result[k];
         const r = roads[sg.meta[i]];
-        if (r.cls < c0 || r.cls > c1) continue;
+        if (r.cls < c0 || r.cls > c1 || r.tunnel) continue;
         w = Math.max(w, r.width);
         ctx.moveTo(segs[4 * i], segs[4 * i + 1]);
         ctx.lineTo(segs[4 * i + 2], segs[4 * i + 3]);

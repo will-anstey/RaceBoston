@@ -82,6 +82,10 @@ const QUERIES = {
   places: `
     node["place"~"^(neighbourhood|suburb|quarter|city|town)$"](${W});
     out body;`,
+  // Stadium outline, used to recognise Fenway Park's building parts.
+  fenway: `
+    relation["name"="Fenway Park"]["leisure"="stadium"](${P});
+    out geom;`,
   signals: `
     node["highway"~"^(traffic_signals|stop|crossing)$"](${P});
     out body;`,

@@ -33,10 +33,13 @@ export class SegmentGrid extends GridBase {
     this._meta2 = [];
   }
 
-  add(ax, az, bx, bz, meta = 0, meta2 = 0) {
+  // y0..y1: vertical extent (used by 3D collision); defaults to unbounded.
+  add(ax, az, bx, bz, meta = 0, meta2 = 0, y0 = -1e6, y1 = 1e6) {
     this._segs.push(ax, az, bx, bz);
     this._meta.push(meta);
     this._meta2.push(meta2);
+    (this._y0 ||= []).push(y0);
+    (this._y1 ||= []).push(y1);
   }
 
   build() {
@@ -44,7 +47,9 @@ export class SegmentGrid extends GridBase {
     this.segs = Float32Array.from(this._segs);
     this.meta = Int32Array.from(this._meta);
     this.meta2 = Int32Array.from(this._meta2);
-    this._segs = this._meta = this._meta2 = null;
+    this.y0 = Float32Array.from(this._y0 || []);
+    this.y1 = Float32Array.from(this._y1 || []);
+    this._segs = this._meta = this._meta2 = this._y0 = this._y1 = null;
     this.n = n;
     this.stamp = new Uint32Array(n);
     const ncell = this.nx * this.nz;

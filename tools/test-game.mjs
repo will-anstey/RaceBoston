@@ -143,13 +143,19 @@ try {
 
   // ---- ram a (stopped) AI car
   const target = await page.evaluate(() => {
-    const g = RB.game;
-    const t = g.traffic.cars.find((c) => !c.wrecked && c.L > 30 && c.s < c.L - 28);
-    if (!t) return null;
-    t.personality = 0;
-    window.__target = t;
-    g.placeCar(t.x - Math.sin(t.heading) * 26, t.z + Math.cos(t.heading) * 26, t.heading);
-    return { x: t.x, z: t.z };
+    const g = RB.game, cw = g.collision;
+    // Any AI car at grade with a clear 20 m run-up straight behind it.
+    for (const t of g.traffic.cars) {
+      if (t.wrecked || Math.abs(t.y) > 0.3) continue;
+      const px = t.x - Math.sin(t.heading) * 20, pz = t.z + Math.cos(t.heading) * 20;
+      if (cw.segmentBlocked(px, pz, t.x, t.z, 1) < 1 || cw.surfaceAt(px, pz) & 16) continue;
+      if (g.traffic.cars.some((o) => o !== t && Math.hypot(o.x - px, o.z - pz) < 8)) continue;
+      t.personality = 0; t.speed = 0;
+      window.__target = t;
+      g.placeCar(px, pz, t.heading);
+      return { x: t.x, z: t.z };
+    }
+    return null;
   });
   if (target) {
     await drive({ throttle: 1 });
@@ -161,7 +167,7 @@ try {
     check('ramming knocks an AI car', r.wrecked && r.gap > 2.5, `wrecked=${r.wrecked} gap ${r.gap.toFixed(1)} m`);
     await shot('t06b_crash');
     await drive(null);
-  } else check('ramming knocks an AI car', false, 'no AI car on a long segment');
+  } else check('ramming knocks an AI car', false, 'no AI car with a clear run-up');
 
   // ---- every leg of every race has a drivable route on the graph
   const legCheck = await page.evaluate(async () => {
@@ -180,6 +186,101 @@ try {
     return { n, bad };
   });
   check('all race legs routable (legal one-way routes)', legCheck.bad.length === 0, `${legCheck.n} legs${legCheck.bad.length ? ' bad: ' + legCheck.bad.join(', ') : ''}`);
+
+  // ---- sports car: 200 mph top speed, unchanged launch (physics on a flat stub world)
+  const perf = await page.evaluate(async () => {
+    const { Vehicle, HANDLING } = await import('/src/vehicle.js');
+    const flat = { surfaceAt: () => 2, groundHeight: (x, z, y, o) => { o.h = 0; o.deck = false; o.inCut = false; return 0; }, resolveCircle: () => false };
+    const run = (id) => {
+      const v = new Vehicle(HANDLING[id]);
+      const inp = { throttle: 1, brake: 0, steer: 0, handbrake: false, boost: false };
+      let t = 0, t60 = null;
+      for (let k = 0; k < 150 * 60; k++) { v.step(1 / 150, inp, flat); t += 1 / 150; if (t60 === null && v.speed >= 60 / 2.23694) t60 = t; }
+      return { t60, top: v.speed * 2.23694 };
+    };
+    return { coupe: run('coupe'), taxi: run('taxi'), suv: run('suv') };
+  });
+  check('sports car tops out at 200 mph', perf.coupe.top >= 199 && perf.coupe.top <= 203, `${perf.coupe.top.toFixed(1)} mph`);
+  check('sports car keeps its launch (0-60 < 3.5 s)', perf.coupe.t60 < 3.5, `0-60 ${perf.coupe.t60.toFixed(2)} s (was 3.39 s); taxi ${perf.taxi.t60.toFixed(2)} s / ${perf.taxi.top.toFixed(0)} mph, SUV ${perf.suv.t60.toFixed(2)} s / ${perf.suv.top.toFixed(0)} mph`);
+
+  // ---- 3D roads: ride the Harvard Bridge deck over the Charles, and the Pike tunnel
+  const onRoad = async (re, x, z, y) => page.evaluate((re, x, z, y) => {
+    const g = RB.game, gr = g.graph, ny = g.map.nodeY;
+    let best = null, bd = Infinity;
+    for (const r of g.map.roads) {
+      if (!new RegExp(re).test(r.name)) continue;
+      for (let i = 0; i + 1 < r.nodes.length; i++) {
+        const a = r.nodes[i], b = r.nodes[i + 1];
+        const d = (gr.nx(a) - x) ** 2 + (gr.nz(a) - z) ** 2 + ((ny[a] - y) * 30) ** 2;
+        if (d < bd) { bd = d; best = [a, b, r]; }
+      }
+    }
+    const [a, b, r] = best;
+    let h = Math.atan2(gr.nx(b) - gr.nx(a), -(gr.nz(b) - gr.nz(a)));
+    g.placeCar(gr.nx(a), gr.nz(a), h, ny[a]);
+    return { y: g.car.y, nodeY: ny[a], name: r.name };
+  }, re, x, z, y);
+  await page.evaluate(() => RB.game.begin('free'));
+  let at = await onRoad('^Massachusetts Avenue$', -2100, 100, 3);
+  await drive({ throttle: 0.5 });
+  await sleep(2500);
+  s = await st();
+  check('drives on the Harvard Bridge deck above the Charles', at.nodeY > 2 && s.y > 2 && s.onDeck && s.sinking === 0, `deck node y ${at.nodeY.toFixed(1)}, car y ${s.y.toFixed(1)}, splash=${s.sinking > 0}`);
+  await shot('t05b_bridge_deck');
+  // Climb onto the bridge from street level (not teleported onto the deck).
+  const climb = await page.evaluate(() => {
+    const g = RB.game, gr = g.graph, ny = g.map.nodeY;
+    // Walk Mass Ave north from an at-grade node in Back Bay until the deck starts.
+    let start = -1, bd = Infinity;
+    for (const r of g.map.roads) if (r.name === 'Massachusetts Avenue') for (const n of r.nodes) {
+      if (Math.abs(ny[n]) > 0.01) continue;
+      const d = (gr.nx(n) + 1940) ** 2 + (gr.nz(n) - 330) ** 2;
+      if (d < bd) { bd = d; start = n; }
+    }
+    let prev = -1, cur = start, path = [start];
+    for (let k = 0; k < 40; k++) {
+      let best = -1, bz = Infinity;
+      for (let e = gr.adjStart[cur]; e < gr.adjStart[cur + 1]; e++) {
+        const ed = gr.adj[e], v = gr.eTo[ed];
+        if (v === prev || !gr.eLegal[ed] || g.map.roads[gr.eRoad[ed]].name !== 'Massachusetts Avenue') continue;
+        if (gr.nz(v) < bz) { bz = gr.nz(v); best = v; }
+      }
+      if (best < 0) break;
+      prev = cur; cur = best; path.push(cur);
+      if (ny[cur] > 2.5) break;
+    }
+    const a = path[0], b = path[1];
+    g.placeCar(gr.nx(a), gr.nz(a), Math.atan2(gr.nx(b) - gr.nx(a), -(gr.nz(b) - gr.nz(a))), 0);
+    window.__climb = path.map((n) => [gr.nx(n), gr.nz(n)]);
+    return { n: path.length, top: ny[path[path.length - 1]] };
+  });
+  await page.evaluate(() => {
+    const g = RB.game, pts = window.__climb;
+    window.__maxY = 0;
+    window.__ci = setInterval(() => {
+      const c = g.car;
+      let k = 0, bd = Infinity;
+      pts.forEach((p, i) => { const d = Math.hypot(p[0] - c.x, p[1] - c.z); if (d < bd) { bd = d; k = i; } });
+      const T = pts[Math.min(pts.length - 1, k + 2)];
+      let d = Math.atan2(T[0] - c.x, -(T[1] - c.z)) - c.heading;
+      while (d > Math.PI) d -= 2 * Math.PI; while (d < -Math.PI) d += 2 * Math.PI;
+      g.inputOverride = { throttle: c.speed < 15 ? 1 : 0, steer: Math.max(-1, Math.min(1, d * 2)) };
+      window.__maxY = Math.max(window.__maxY, c.y);
+    }, 33);
+  });
+  await sleep(9000);
+  const cl = await page.evaluate(() => { clearInterval(window.__ci); RB.game.inputOverride = null; return { maxY: window.__maxY, y: RB.game.car.y, deck: RB.game.car.onDeck, sink: RB.game.sinking }; });
+  check('climbs the Harvard Bridge from street level', cl.maxY > 2.5 && cl.sink === 0, `route to deck ${climb.top.toFixed(1)} m over ${climb.n} nodes; car reached ${cl.maxY.toFixed(1)} m, splash=${cl.sink > 0}`);
+  at = await onRoad('^Massachusetts Turnpike$', -1100, 650, -11);
+  await drive({ throttle: 0.5 });
+  await sleep(2500);
+  s = await st();
+  check('drives in the Mass Pike tunnel under Back Bay', at.nodeY < -5 && s.y < -5 && s.sinking === 0 && s.street === 'Massachusetts Turnpike', `node y ${at.nodeY.toFixed(1)}, car y ${s.y.toFixed(1)}, street "${s.street}"`);
+  await shot('t05c_tunnel');
+  await drive(null);
+  const extras = await page.evaluate(() => ({ posts: RB.game.signs.posts.length, lm: RB.game.world.landmarks.handled.size, props: RB.game.world.landmarks.props.children.length, field: !!RB.game.world.landmarks.field }));
+  check('street signs at intersections', extras.posts > 1500, `${extras.posts} sign posts`);
+  check('landmarks dressed (Fenway etc.)', extras.lm > 40 && extras.props > 30 && extras.field, `${extras.lm} landmark parts, ${extras.props} props, Fenway field ${extras.field}`);
 
   // ---- race: teleport through checkpoints
   await page.evaluate(() => RB.game.begin('race', 'backbay'));

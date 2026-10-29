@@ -44,6 +44,7 @@ export class Traffic {
     const isSignal = new Uint8Array(g.N);
     this.signalPhase = new Float32Array(g.N);
     for (const n of map.signals) {
+      if (Math.abs(map.nodeY[n]) > 0.5) continue;
       isSignal[n] = 1;
       const cx = Math.floor(g.nx(n) / 70), cz = Math.floor(g.nz(n) / 70);
       this.signalPhase[n] = hash01(cx * 73856093 ^ cz * 19349663) * SIGNAL_CYCLE;
@@ -52,6 +53,7 @@ export class Traffic {
     // Visual heads: one per approach (incoming edge) at each signal node.
     const heads = [];
     for (const n of map.signals) {
+      if (!isSignal[n]) continue;
       for (let k = g.adjStart[n]; k < g.adjStart[n + 1]; k++) {
         const e = g.adj[k];
         // Edge n->v reversed is the approach v->n; it must be legal.
@@ -194,7 +196,7 @@ export class Traffic {
     if (ml < 1e-3) { mx = n2x; mz = n2z; } else { mx /= ml; mz /= ml; }
     const sc = 1 / Math.max(0.5, mx * n2x + mz * n2z);
     const off = (offIn + offOut) / 2;
-    return [x + mx * off * sc, z + mz * off * sc];
+    return [x + mx * off * sc, z + mz * off * sc, this.map.nodeY[n]];
   }
 
   // Extend a car's path so it has at least `ahead` nodes beyond index 1.
@@ -238,6 +240,7 @@ export class Traffic {
     const L = Math.hypot(P1[0] - P0[0], P1[1] - P0[1]) || 0.01;
     const L2 = Math.hypot(P2[0] - P1[0], P2[1] - P1[1]) || 0.01;
     c.P0 = P0; c.P1 = P1; c.P2 = P2; c.L = L;
+    c.yA = P0[2]; c.yB = P1[2]; c.pitch = Math.atan2(P1[2] - P0[2], L);
     c.D1 = Math.min(7, L / 2, L2 / 2);
     // Turn angle at node 1.
     const ax = (P1[0] - P0[0]) / L, az = (P1[1] - P0[1]) / L, bx = (P2[0] - P1[0]) / L2, bz = (P2[1] - P1[1]) / L2;
@@ -288,7 +291,7 @@ export class Traffic {
       model, type, spec: model.spec,
       path: [n, g.eTo[e]], offs: [0], roadsOnPath: [g.eRoad[e]],
       laneIdx: Math.random() < 0.6 ? 0 : 1, s: 0,
-      speed: 0, vx: 0, vz: 0, heading: 0, x: g.nx(n), z: g.nz(n),
+      speed: 0, vx: 0, vz: 0, heading: 0, x: g.nx(n), z: g.nz(n), y: this.map.nodeY[n], pitch: 0,
       personality: 0.82 + Math.random() * 0.3, stuck: 0, ghost: 0,
       wrecked: false, wreckTime: 0, spin: 0, hazard: 0,
       len: model.spec.L, wid: model.spec.W,
@@ -334,6 +337,7 @@ export class Traffic {
       tx = c.dir[0]; tz = c.dir[1];
     }
     c.x = x; c.z = z;
+    c.y = c.yA + (c.yB - c.yA) * Math.max(0, Math.min(1, c.s / L));
     c.heading = Math.atan2(tx, -tz);
   }
 
@@ -395,7 +399,8 @@ export class Traffic {
       // Follow the car in front (including the player).
       const fx = Math.sin(c.heading), fz = -Math.cos(c.heading);
       let gap = Infinity;
-      const consider = (ox, oz, oh, olen, solid) => {
+      const consider = (ox, oz, oh, olen, solid, oy) => {
+        if (Math.abs(oy - c.y) > 3) return;
         const dx = ox - c.x, dz = oz - c.z;
         const ahead = dx * fx + dz * fz;
         if (ahead <= 0 || ahead > 40) return;
@@ -404,8 +409,8 @@ export class Traffic {
         if (!solid && Math.cos(oh - c.heading) < 0.2) return;
         gap = Math.min(gap, ahead - olen / 2 - c.len / 2);
       };
-      if (c.ghost <= 0) for (const o of this.cars) if (o !== c) consider(o.x, o.z, o.heading, o.len, o.wrecked);
-      consider(px, pz, player.heading, 4.5, true);
+      if (c.ghost <= 0) for (const o of this.cars) if (o !== c) consider(o.x, o.z, o.heading, o.len, o.wrecked, o.y);
+      consider(px, pz, player.heading, 4.5, true, player.y);
       if (gap < Infinity) {
         const safe = Math.max(0, (gap - 2.5) * 1.1);
         target = Math.min(target, safe);
@@ -445,7 +450,7 @@ export class Traffic {
     c.heading += c.spin * dt;
     // Wrecks still collide with buildings.
     const out = { depth: 0, nx: 0, nz: 0 };
-    if (this.g.collision.resolveCircle(c.x, c.z, c.wid / 2 + 0.2, out)) {
+    if (this.g.collision.resolveCircle(c.x, c.z, c.wid / 2 + 0.2, out, c.y)) {
       c.x += out.nx * out.depth; c.z += out.nz * out.depth;
       const vn = c.vx * out.nx + c.vz * out.nz;
       if (vn < 0) { c.vx -= 1.3 * vn * out.nx; c.vz -= 1.3 * vn * out.nz; }
@@ -458,14 +463,14 @@ export class Traffic {
 
   _render(c) {
     const r = c.model.root;
-    r.position.set(c.x, 0, c.z);
-    r.rotation.y = -c.heading;
+    r.position.set(c.x, c.y, c.z);
+    r.rotation.set(c.wrecked ? 0 : c.pitch, -c.heading, 0, 'YXZ');
   }
 
   _collidePlayer(c) {
     const p = this.g.car;
     const dx0 = c.x - p.x, dz0 = c.z - p.z;
-    if (dx0 * dx0 + dz0 * dz0 > 100) return;
+    if (dx0 * dx0 + dz0 * dz0 > 100 || Math.abs(c.y - p.y) > 2.2) return;
     const pf = [Math.sin(p.heading), -Math.cos(p.heading)];
     const cf = [Math.sin(c.heading), -Math.cos(c.heading)];
     const half = Math.max(0, c.len / 2 - c.wid / 2);

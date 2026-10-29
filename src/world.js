@@ -5,136 +5,20 @@ import * as THREE from 'three';
 import earcut from '../vendor/earcut.js';
 import { RC, AREA, SIDEWALK_W, hasSidewalk } from './mapdata.js';
 import * as MAT from './materials.js';
-import { hash32, hash01, mulberry32, nextFrame } from './util.js';
+import { hash32, nextFrame } from './util.js';
+import { GeoBuilder, rgb, crossY, addPolygon, polyOffsets, ribbon, meshOf, roofPlan } from './geom.js';
+import { buildStructures, segCategory, LIFT } from './structures.js';
+import { buildLandmarks } from './landmarks.js';
 
 export const LAND_COLOR = 0xb7b2a3;
 const AREA_COLORS = {
   [AREA.PARK]: 0x76a650, [AREA.GRASS]: 0x86b25c, [AREA.PITCH]: 0x5f9f45, [AREA.GOLF]: 0x84bd5e,
   [AREA.CEMETERY]: 0x83a06b, [AREA.WOOD]: 0x5a8a40, [AREA.PLAYGROUND]: 0xc4ae86, [AREA.TRACK]: 0xa65a45,
-  [AREA.SAND]: 0xe0cf9c, [AREA.WETLAND]: 0x7c9c6c, [AREA.GARDEN]: 0x7fb05a, [AREA.RAILYARD]: 0x958a7e,
+  [AREA.SAND]: 0xe0cf9c, [AREA.WETLAND]: 0x7c9c6c, [AREA.GARDEN]: 0x7fb05a, [AREA.RAILYARD]: 0x958a7e, [AREA.DIRT]: 0xa8714a,
   [AREA.PARKING]: 0x87878a, [AREA.PLAZA]: 0xc8c0b2, [AREA.PIER]: 0x9b8a72, [AREA.FUEL]: 0x8c8c8e,
 };
 const PATH_COLORS = [0xd3c6a6, 0xcbc2b3, 0xa3a7a7, 0xb39f7b];
 const CHUNK = 300;
-
-// ------------------------------------------------------------ buffers
-class Buf {
-  constructor(Type = Float32Array, n = 4096) { this.T = Type; this.a = new Type(n); this.n = 0; }
-  grow(k) {
-    if (this.n + k <= this.a.length) return;
-    let len = this.a.length * 2;
-    while (len < this.n + k) len *= 2;
-    const b = new this.T(len);
-    b.set(this.a);
-    this.a = b;
-  }
-  p1(a) { this.grow(1); this.a[this.n++] = a; }
-  p2(a, b) { this.grow(2); const A = this.a; A[this.n++] = a; A[this.n++] = b; }
-  p3(a, b, c) { this.grow(3); const A = this.a; A[this.n++] = a; A[this.n++] = b; A[this.n++] = c; }
-  p4(a, b, c, d) { this.grow(4); const A = this.a; A[this.n++] = a; A[this.n++] = b; A[this.n++] = c; A[this.n++] = d; }
-  view() { return this.a.slice(0, this.n); }
-}
-
-class GeoBuilder {
-  constructor(attrs) {
-    this.pos = new Buf(Float32Array);
-    this.idx = new Buf(Uint32Array);
-    this.attrs = {};
-    for (const [name, [Type, size, normalized]] of Object.entries(attrs || {})) this.attrs[name] = { buf: new Buf(Type), size, normalized };
-  }
-  get vcount() { return this.pos.n / 3; }
-  build() {
-    if (!this.pos.n) return null;
-    const g = new THREE.BufferGeometry();
-    g.setAttribute('position', new THREE.BufferAttribute(this.pos.view(), 3));
-    for (const [name, a] of Object.entries(this.attrs)) g.setAttribute(name, new THREE.BufferAttribute(a.buf.view(), a.size, a.normalized));
-    g.setIndex(new THREE.BufferAttribute(this.idx.view(), 1));
-    g.computeBoundingSphere();
-    g.computeBoundingBox();
-    return g;
-  }
-}
-
-const rgb = (hex) => [(hex >> 16) & 255, (hex >> 8) & 255, hex & 255];
-const crossY = (ax, az, bx, bz, cx, cz) => (bz - az) * (cx - ax) - (bx - ax) * (cz - az);
-
-// Triangulate a polygon (Float32Array rings) into a builder at height y.
-function addPolygon(b, rings, y, color) {
-  const flat = [];
-  const holes = [];
-  for (let k = 0; k < rings.length; k++) {
-    if (k) holes.push(flat.length / 2);
-    const r = rings[k];
-    for (let i = 0; i < r.length; i++) flat.push(r[i]);
-  }
-  const tri = earcut(flat, holes.length ? holes : null, 2);
-  if (!tri.length) return;
-  const base = b.vcount;
-  const n = flat.length / 2;
-  const [cr, cg, cb] = rgb(color);
-  const col = b.attrs.color.buf;
-  for (let i = 0; i < n; i++) {
-    b.pos.p3(flat[2 * i], y, flat[2 * i + 1]);
-    col.p3(cr, cg, cb);
-  }
-  for (let i = 0; i < tri.length; i += 3) {
-    let a = tri[i], c1 = tri[i + 1], c2 = tri[i + 2];
-    if (crossY(flat[2 * a], flat[2 * a + 1], flat[2 * c1], flat[2 * c1 + 1], flat[2 * c2], flat[2 * c2 + 1]) < 0) [c1, c2] = [c2, c1];
-    b.idx.p3(base + a, base + c1, base + c2);
-  }
-}
-
-// Computes mitred unit offsets (pointing right of travel) for a polyline.
-function polyOffsets(pts, prev, next) {
-  const n = pts.length / 2;
-  const ox = new Float32Array(n), oz = new Float32Array(n), s = new Float32Array(n);
-  for (let i = 0; i < n; i++) {
-    let ix = 0, iz = 0, jx = 0, jz = 0, hasIn = false, hasOut = false;
-    if (i > 0) { ix = pts[2 * i] - pts[2 * i - 2]; iz = pts[2 * i + 1] - pts[2 * i - 1]; hasIn = true; }
-    else if (prev) { ix = pts[0] - prev[0]; iz = pts[1] - prev[1]; hasIn = true; }
-    if (i < n - 1) { jx = pts[2 * i + 2] - pts[2 * i]; jz = pts[2 * i + 3] - pts[2 * i + 1]; hasOut = true; }
-    else if (next) { jx = next[0] - pts[2 * i]; jz = next[1] - pts[2 * i + 1]; hasOut = true; }
-    let li = Math.hypot(ix, iz), lj = Math.hypot(jx, jz);
-    if (!hasIn || li < 1e-6) { ix = jx; iz = jz; li = lj; }
-    if (!hasOut || lj < 1e-6) { jx = ix; jz = iz; lj = li; }
-    if (li < 1e-6) { ix = 1; iz = 0; li = 1; jx = 1; jz = 0; lj = 1; }
-    ix /= li; iz /= li; jx /= lj; jz /= lj;
-    const n1x = -iz, n1z = ix, n2x = -jz, n2z = jx;
-    let mx = n1x + n2x, mz = n1z + n2z;
-    const ml = Math.hypot(mx, mz);
-    if (ml < 1e-4) { mx = n2x; mz = n2z; } else { mx /= ml; mz /= ml; }
-    const scale = 1 / Math.max(0.4, mx * n2x + mz * n2z);
-    ox[i] = mx * scale; oz[i] = mz * scale;
-    if (i > 0) s[i] = s[i - 1] + Math.hypot(pts[2 * i] - pts[2 * i - 2], pts[2 * i + 1] - pts[2 * i - 1]);
-  }
-  return { ox, oz, s, n };
-}
-
-// Emits a flat ribbon: one quad per segment; perVertex(builder, side, s, segIndex) adds attributes.
-function ribbon(b, pts, hw, y, perVertex, prev, next, segFilter) {
-  if (pts.length < 4) return;
-  const { ox, oz, s, n } = polyOffsets(pts, prev, next);
-  for (let i = 0; i + 1 < n; i++) {
-    if (segFilter && !segFilter(i)) continue;
-    const base = b.vcount;
-    for (const [k, side] of [[i, -1], [i, 1], [i + 1, 1], [i + 1, -1]]) {
-      b.pos.p3(pts[2 * k] + ox[k] * hw * side, y, pts[2 * k + 1] + oz[k] * hw * side);
-      perVertex(side * hw, s[k], i);
-    }
-    b.idx.p3(base, base + 1, base + 2);
-    b.idx.p3(base, base + 2, base + 3);
-  }
-}
-
-function meshOf(geo, mat, order, { shadow = false, receive = true } = {}) {
-  const m = new THREE.Mesh(geo, mat);
-  m.renderOrder = order;
-  m.castShadow = shadow;
-  m.receiveShadow = receive;
-  m.matrixAutoUpdate = false;
-  m.updateMatrix();
-  return m;
-}
 
 // =====================================================================
 export async function buildWorld(map, graph, scene, progress = () => {}) {
@@ -163,7 +47,13 @@ export async function buildWorld(map, graph, scene, progress = () => {}) {
   mats.building = MAT.makeBuildingMaterial();
   mats.tree = MAT.makeVertexColorMaterial({ name: 'tree', roughness: 0.95 });
   mats.concrete = MAT.makeFlatProp(0xa9a7a0);
+  mats.concrete3d = MAT.makeFlatProp(0x9f9c95, { side: THREE.DoubleSide });
   mats.railing = MAT.makeFlatProp(0xb9bcbf, { side: THREE.DoubleSide, metalness: 0.3, roughness: 0.6 });
+  mats.road3d = MAT.as3D(MAT.makeRoadMaterial());
+  mats.roadTunnel = MAT.as3D(MAT.makeRoadMaterial({ tunnel: true }));
+  mats.sidewalk3d = MAT.as3D(MAT.makeSidewalkMaterial());
+  mats.rail3d = MAT.as3D(MAT.makeRailMaterial());
+  mats.tunnel = MAT.makeTunnelMaterial();
 
   // ---------------------------------------------------- base planes
   {
@@ -217,8 +107,26 @@ export async function buildWorld(map, graph, scene, progress = () => {}) {
   // ------------------------------------------------------- rail
   {
     const rail = new GeoBuilder({ aUV: [Float32Array, 2, false] });
-    for (const r of map.rail) ribbon(rail, r.pts, 1.45, 0, (u, s) => rail.attrs.aUV.buf.p2(u, s));
+    const rail3 = new GeoBuilder({ aUV: [Float32Array, 2, false] });
+    const deck = new GeoBuilder({});
+    for (const r of map.rail) {
+      if (!r.ys) { ribbon(rail, r.pts, 1.45, 0, (u, s) => rail.attrs.aUV.buf.p2(u, s)); continue; }
+      ribbon(rail3, r.pts, 1.45, LIFT, (u, s, seg, tb) => tb.attrs.aUV.buf.p2(u, s), null, null, null, r.ys);
+      // simple slab under raised track
+      const { ox, oz } = polyOffsets(r.pts);
+      for (let i = 0; i + 1 < r.pts.length / 2; i++) {
+        const ya = r.ys[i], yb = r.ys[i + 1];
+        if (Math.max(ya, yb) < 0.3) continue;
+        const P = (k, o, y) => [r.pts[2 * k] + ox[k] * o, y, r.pts[2 * k + 1] + oz[k] * o];
+        for (const o of [-1.7, 1.7]) deck.quad(P(i, o, ya - 0.9), P(i + 1, o, yb - 0.9), P(i + 1, o, yb + LIFT), P(i, o, ya + LIFT));
+        deck.quad(P(i, -1.7, ya - 0.9), P(i + 1, -1.7, yb - 0.9), P(i + 1, 1.7, yb - 0.9), P(i, 1.7, ya - 0.9));
+      }
+    }
     add(meshOf(rail.build(), mats.rail, -36));
+    const g3 = rail3.build();
+    if (g3) add(meshOf(g3, mats.rail3d, 0));
+    const gd = deck.build();
+    if (gd) add(meshOf(gd, mats.concrete3d, 0, { shadow: true }));
   }
   // ------------------------------------------------------- paths
   {
@@ -270,21 +178,32 @@ export async function buildWorld(map, graph, scene, progress = () => {}) {
     if (r.oneway) return r.cls <= RC.TRUNK ? 3 : r.lanes >= 2 ? 2 : 0;
     return r.cls <= RC.TRUNK ? 4 : 1;
   };
+  const ny = map.nodeY;
   {
-    const road = new GeoBuilder({ aUV: [Float32Array, 2, false], aRoad: [Float32Array, 4, false], aMark: [Uint8Array, 1, false] });
-    const side = new GeoBuilder({ aUV: [Float32Array, 2, false], aSide: [Float32Array, 1, false] });
+    const roadAttrs = () => ({ aUV: [Float32Array, 2, false], aRoad: [Float32Array, 4, false], aMark: [Uint8Array, 1, false] });
+    const sideAttrs = () => ({ aUV: [Float32Array, 2, false], aSide: [Float32Array, 1, false] });
+    const road = new GeoBuilder(roadAttrs()), road3 = new GeoBuilder(roadAttrs()), roadT = new GeoBuilder(roadAttrs());
+    const side = new GeoBuilder(sideAttrs()), side3 = new GeoBuilder(sideAttrs());
     // Small roads first so bigger roads paint over them at junctions.
     const order = map.roads.slice().sort((a, b) => b.cls - a.cls);
     for (const r of order) {
       const base = roadPts(r);
+      const baseY = Float32Array.from(r.nodes, (n) => ny[n]);
+      const catOf = (ya, yb) => segCategory(r, ya, yb);
+      const baseCats = [];
+      for (let i = 0; i + 1 < r.nodes.length; i++) baseCats.push(catOf(baseY[i], baseY[i + 1]));
       const { prev, next } = endNeighbours(r);
       const hw = r.width / 2;
       if (hasSidewalk(r)) {
-        ribbon(side, base, hw + SIDEWALK_W, 0, (u, s) => { side.attrs.aUV.buf.p2(u, s); side.attrs.aSide.buf.p1(hw); }, prev, next);
+        const sw = (u, s, seg, tb) => { tb.attrs.aUV.buf.p2(u, s); tb.attrs.aSide.buf.p1(hw); };
+        ribbon((i) => (baseCats[i] === 'flat' ? side : null), base, hw + SIDEWALK_W, 0, sw, prev, next);
+        // Raised sidewalk strips on 3D roads (a full-width ribbon would z-fight the road).
+        const strip = (i) => (baseCats[i] === 'flat' ? null : side3);
+        emitStrips(strip, base, baseY, hw, hw + SIDEWALK_W, LIFT + 0.12, sw, prev, next);
       }
       // Insert cut points around junctions so paint can stop cleanly.
       const style = markStyle(r);
-      let pts = base, marks = null;
+      let pts = base, ptsY = baseY, marks = null;
       if (style) {
         const ns = r.nodes;
         const sAt = [0];
@@ -300,7 +219,7 @@ export async function buildWorld(map, graph, scene, progress = () => {}) {
         const cuts = [];
         for (const [a, b] of zones) { if (a > 0 && a < L) cuts.push(a); if (b > 0 && b < L) cuts.push(b); }
         cuts.sort((a, b) => a - b);
-        const out = [];
+        const out = [], outY = [];
         let c = 0;
         for (let i = 0; i < ns.length; i++) {
           if (i > 0) {
@@ -308,13 +227,16 @@ export async function buildWorld(map, graph, scene, progress = () => {}) {
               if (cuts[c] > sAt[i - 1]) {
                 const t = (cuts[c] - sAt[i - 1]) / (sAt[i] - sAt[i - 1]);
                 out.push(base[2 * i - 2] + (base[2 * i] - base[2 * i - 2]) * t, base[2 * i - 1] + (base[2 * i + 1] - base[2 * i - 1]) * t);
+                outY.push(baseY[i - 1] + (baseY[i] - baseY[i - 1]) * t);
               }
               c++;
             }
           }
           out.push(base[2 * i], base[2 * i + 1]);
+          outY.push(baseY[i]);
         }
         pts = Float32Array.from(out);
+        ptsY = Float32Array.from(outY);
         // Mark per segment of the densified polyline.
         marks = [];
         let s = 0;
@@ -325,16 +247,37 @@ export async function buildWorld(map, graph, scene, progress = () => {}) {
           s += len;
         }
       }
-      const ra = road.attrs;
-      ribbon(road, pts, hw, 0, (u, s, seg) => {
-        ra.aUV.buf.p2(u, s);
-        ra.aRoad.buf.p4(hw, r.lanes, style, r.shoulder);
-        ra.aMark.buf.p1(marks ? marks[seg] : 0);
-      }, prev, next);
+      const pick = (i) => {
+        const c = catOf(ptsY[i], ptsY[i + 1]);
+        return c === 'flat' ? road : c === 'tunnel' ? roadT : road3;
+      };
+      const lifted = Float32Array.from(ptsY, (y, i) => y);
+      ribbon(pick, pts, hw, 0, (u, s, seg, tb) => {
+        tb.attrs.aUV.buf.p2(u, s);
+        tb.attrs.aRoad.buf.p4(hw, r.lanes, style, r.shoulder);
+        tb.attrs.aMark.buf.p1(marks ? marks[seg] : 0);
+      }, prev, next, null, liftNonFlat(lifted, (i) => pick(i) !== road));
     }
     add(meshOf(side.build(), mats.sidewalk, -32));
     add(meshOf(road.build(), mats.road, -30));
+    const g3 = road3.build();
+    if (g3) add(meshOf(g3, mats.road3d, 0));
+    const gt = roadT.build();
+    if (gt) add(meshOf(gt, mats.roadTunnel, 0, { receive: false }));
+    const gs = side3.build();
+    if (gs) add(meshOf(gs, mats.sidewalk3d, 0));
   }
+  // ------------------------------------------------- bridges / tunnels
+  world.structures = buildStructures(map, graph, mats, add, {
+    isGroundRoad: (x, z) => {
+      const hit = graph.nearestRoad(x, z, 12);
+      if (!hit) return false;
+      const rd = map.roads[hit.road];
+      const a = rd.nodes[hit.seg], b = rd.nodes[hit.seg + 1];
+      const y = ny[a] + (ny[b] - ny[a]) * hit.t;
+      return y < 2 && hit.dist < rd.width / 2 + SIDEWALK_W + 1.5;
+    },
+  });
   // ---------------------------------------------------- crosswalks
   {
     const cw = new GeoBuilder({ aUV: [Float32Array, 2, false] });
@@ -343,6 +286,9 @@ export async function buildWorld(map, graph, scene, progress = () => {}) {
   }
   progress(0.3, 'Raising buildings');
   await nextFrame();
+  // Landmarks get custom textures/props; the generic builder skips them.
+  world.landmarks = buildLandmarks(map, add);
+  const skip = world.landmarks.handled, wallsDone = world.landmarks.wallsOnly;
 
   // ------------------------------------------------------ buildings
   const chunkKey = (x, z) => Math.floor((x - play.minX) / CHUNK) * 1000 + Math.floor((z - play.minZ) / CHUNK);
@@ -361,7 +307,7 @@ export async function buildWorld(map, graph, scene, progress = () => {}) {
   let bi = 0;
   for (const bd of map.buildings) {
     if (++bi % 4000 === 0) { progress(0.3 + 0.45 * (bi / map.buildings.length), 'Raising buildings'); await nextFrame(); }
-    if (bd.hidden) continue;
+    if (bd.hidden || skip.has(bi - 1)) continue;
     const outer = bd.rings[0];
     const n0 = outer.length / 2;
     if (n0 < 3) continue;
@@ -374,17 +320,21 @@ export async function buildWorld(map, graph, scene, progress = () => {}) {
     const wc = rgb(bd.color).map((v) => Math.min(255, v * shade));
     const seed = (hsh >> 10) & 255;
     const style = bd.style;
-    const top = bd.h, bot = bd.minH;
+    const bot = bd.minH;
+    const top = bd.h;
+    const plan = roofPlan(bd);
+    const wallTop = plan.wallTop;
+    const skipWalls = wallsDone.has(bi - 1);
     const col = b.attrs.color.buf, info = b.attrs.aInfo.buf, nrm = b.attrs.normal.buf;
     // walls
-    for (const r of bd.rings) {
+    for (const r of skipWalls ? [] : bd.rings) {
       const n = r.length / 2;
       for (let i = 0; i < n; i++) {
         const j = (i + 1) % n;
         const ax = r[2 * i], az = r[2 * i + 1], bx = r[2 * j], bz = r[2 * j + 1];
         if (ax === bx && az === bz) continue;
         const base = b.vcount;
-        b.pos.p3(ax, bot, az); b.pos.p3(bx, bot, bz); b.pos.p3(bx, top, bz); b.pos.p3(ax, top, az);
+        b.pos.p3(ax, bot, az); b.pos.p3(bx, bot, bz); b.pos.p3(bx, wallTop, bz); b.pos.p3(ax, wallTop, az);
         const el = Math.hypot(bx - ax, bz - az);
         const wnx = Math.round((-(bz - az) / el) * 127), wnz = Math.round(((bx - ax) / el) * 127);
         for (let k = 0; k < 4; k++) { col.p3(wc[0], wc[1], wc[2]); info.p2(style, seed); nrm.p3(wnx, 0, wnz); }
@@ -396,12 +346,15 @@ export async function buildWorld(map, graph, scene, progress = () => {}) {
     let area = 0;
     for (let i = 0; i < n0; i++) { const j = (i + 1) % n0; area += outer[2 * i] * outer[2 * j + 1] - outer[2 * j] * outer[2 * i + 1]; }
     area = Math.abs(area / 2);
-    const pitched = bd.rings.length === 1 && n0 <= 12 && top < 16 && area < 320 && bot < 1 &&
-      (bd.pitched || (style === 2 && (hsh >> 20) % 10 < 7));
+    const tagged = plan.kind === 'pitched';
+    const pitched = tagged || (plan.kind === 'flat' && bd.rings.length === 1 && n0 <= 12 && top < 16 && area < 320 && bot < 1 && style === 2 && (hsh >> 20) % 10 < 7);
     const roofCol = rgb(bd.roof >= 0 ? bd.roof : (pitched ? ROOF_PITCH : ROOF_FLAT)[(hsh >> 4) % 6]);
-    if (pitched) {
-      const rh = Math.min(3.6, Math.max(1.6, Math.sqrt(area) * 0.32));
-      addPitchedRoof(b, outer, top, rh, roofCol, seed);
+    if (plan.kind === 'dome') {
+      addDomeRoof(b, outer, wallTop, plan.rh, roofCol, seed);
+    } else if (pitched) {
+      // Tagged roofs: OSM height includes the roof, so it starts at wallTop.
+      const rh = tagged ? plan.rh : Math.min(3.6, Math.max(1.6, Math.sqrt(area) * 0.32));
+      addPitchedRoof(b, outer, tagged ? wallTop : top, rh, roofCol, seed);
     } else {
       const flat = [], holes = [];
       bd.rings.forEach((r, k) => { if (k) holes.push(flat.length / 2); for (const v of r) flat.push(v); });
@@ -472,45 +425,6 @@ export async function buildWorld(map, graph, scene, progress = () => {}) {
     }
   }
 
-  // ----------------------------------------------- bridge railings
-  {
-    const rb = new GeoBuilder({});
-    const fb = new GeoBuilder({});
-    for (const r of map.roads) {
-      if (!r.rail.length) continue;
-      const base = roadPts(r);
-      const off = r.width / 2 + (hasSidewalk(r) ? SIDEWALK_W : 0.3) + 0.15;
-      const n = base.length / 2;
-      const sAt = [0];
-      for (let i = 1; i < n; i++) sAt.push(sAt[i - 1] + Math.hypot(base[2 * i] - base[2 * i - 2], base[2 * i + 1] - base[2 * i - 1]));
-      for (const [s0, s1] of r.rail) {
-        // Extract the sub-polyline between s0 and s1.
-        const sub = [];
-        const at = (s) => {
-          let i = 1;
-          while (i < n - 1 && sAt[i] < s) i++;
-          const t = Math.min(1, Math.max(0, (s - sAt[i - 1]) / Math.max(1e-6, sAt[i] - sAt[i - 1])));
-          return [base[2 * i - 2] + (base[2 * i] - base[2 * i - 2]) * t, base[2 * i - 1] + (base[2 * i + 1] - base[2 * i - 1]) * t];
-        };
-        sub.push(...at(s0));
-        for (let i = 0; i < n; i++) if (sAt[i] > s0 && sAt[i] < s1) sub.push(base[2 * i], base[2 * i + 1]);
-        sub.push(...at(s1));
-        const pts = Float32Array.from(sub);
-        const { ox, oz } = polyOffsets(pts);
-        for (const sd of [-1, 1]) {
-          const line = [];
-          for (let i = 0; i < pts.length / 2; i++) line.push(pts[2 * i] + ox[i] * off * sd, pts[2 * i + 1] + oz[i] * off * sd);
-          addRailing(rb, line, sd, fb);
-          for (let i = 0; i + 2 < line.length; i += 2) world.railSegments.push([line[i], line[i + 1], line[i + 2], line[i + 3]]);
-        }
-      }
-    }
-    const g = rb.build();
-    if (g) add(meshOf(g, mats.railing, 0, { shadow: true }));
-    const gf = fb.build();
-    if (gf) add(meshOf(gf, mats.concrete, 0));
-  }
-
   addZakimTowers(world, map, add);
 
   // ----------------------------------------------- landmark labels
@@ -544,24 +458,22 @@ function addZakimTowers(world, map, add) {
   const cx0 = (-71.0617 - origin.lon) * mpd.lon, cz0 = -(42.3686 - origin.lat) * mpd.lat;
   const nodes = map.nodes;
   const pts = [];
+  const waterAt = makeWaterTest(map);
   for (const r of map.roads) {
-    if (!r.bridge || !r.rail.length || r.cls > RC.TRUNK || /Leverett/.test(r.name) || (r.name && !/Fitzgerald|93/.test(r.name))) continue;
-    // Sample the over-water stretches every 5 m.
-    let s = 0;
+    if (!r.bridge || r.cls > RC.TRUNK || /Leverett/.test(r.name) || (r.name && !/Fitzgerald|93/.test(r.name))) continue;
+    // Sample the stretches over the Charles every 5 m.
     for (let i = 0; i + 1 < r.nodes.length; i++) {
       const a = r.nodes[i], b = r.nodes[i + 1];
       const ax = nodes[2 * a], az = nodes[2 * a + 1], bx = nodes[2 * b], bz = nodes[2 * b + 1];
       const L = Math.hypot(bx - ax, bz - az);
       for (let d = 0; d < L; d += 5) {
-        const sd = s + d;
-        if (!r.rail.some(([s0, s1]) => sd >= s0 && sd <= s1)) continue;
         const x = ax + ((bx - ax) * d) / L, z = az + ((bz - az) * d) / L;
-        if (Math.hypot(x - cx0, z - cz0) < 260) pts.push([x, z]);
+        if (Math.hypot(x - cx0, z - cz0) < 260 && waterAt(x, z)) pts.push([x, z, map.nodeY[a] + ((map.nodeY[b] - map.nodeY[a]) * d) / L]);
       }
-      s += L;
     }
   }
   if (pts.length < 10) return;
+  const deckY = pts.reduce((s2, p) => s2 + p[2], 0) / pts.length;
   let mx = 0, mz = 0;
   for (const [x, z] of pts) { mx += x; mz += z; }
   mx /= pts.length; mz /= pts.length;
@@ -588,21 +500,21 @@ function addZakimTowers(world, map, add) {
   const V = (x, y, z) => new THREE.Vector3(x, y, z);
   for (const s of [-1, 1]) {
     const tx = ccx + ax * s * 113, tz = ccz + az * s * 113;
-    const apexY = 62, topY = 90;
+    const apexY = 62 + deckY, topY = 90 + deckY;
     const footL = V(tx - px * half, 0, tz - pz * half), footR = V(tx + px * half, 0, tz + pz * half);
     const apex = V(tx, apexY, tz);
     beam(footL, apex, 2.6);
     beam(footR, apex, 2.6);
     beam(apex, V(tx, topY, tz), 2.2);
-    beam(V(tx - px * half * 0.55, 24, tz - pz * half * 0.55), V(tx + px * half * 0.55, 24, tz + pz * half * 0.55), 1.6);
+    beam(V(tx - px * half * 0.62, deckY - 1.5, tz - pz * half * 0.62), V(tx + px * half * 0.62, deckY - 1.5, tz + pz * half * 0.62), 2.2);
     // Cable fans toward the main span and the back span, to both deck edges.
     for (let k = 1; k <= 9; k++) {
-      const y = apexY + 2 + k * 2.6;
+      const y = apexY - deckY + 2 + k * 2.6;
       for (const dir of [-1, 1]) {
         const dist = 12 + k * 11;
         for (const e of [-1, 1]) {
           const dx = tx + ax * dir * dist + px * e * (half - 3), dz = tz + az * dir * dist + pz * e * (half - 3);
-          cable.push(tx, y, tz, dx, 0.8, dz);
+          cable.push(tx, y + deckY, tz, dx, deckY + 0.8, dz);
         }
       }
     }
@@ -765,4 +677,84 @@ function makeLabel(text) {
   s.center.set(0.5, 0);
   s.renderOrder = 5;
   return s;
+}
+
+// Lift the vertices of non-flat segments by LIFT (keeps 3D roads above the ground mask).
+function liftNonFlat(ys, isNonFlat) {
+  const out = Float32Array.from(ys);
+  for (let i = 0; i + 1 < ys.length; i++) if (isNonFlat(i)) { out[i] = ys[i] + LIFT; out[i + 1] = ys[i + 1] + LIFT; }
+  return out;
+}
+
+// Two strips (left/right) between lateral offsets u0..u1 along a polyline with heights.
+function emitStrips(pick, pts, ys, u0, u1, lift, perVertex, prev, next) {
+  const { ox, oz, s, n } = polyOffsets(pts, prev, next);
+  for (let i = 0; i + 1 < n; i++) {
+    const tb = pick(i);
+    if (!tb) continue;
+    for (const sd of [-1, 1]) {
+      const base = tb.vcount;
+      const corners = sd < 0 ? [[i, -u1], [i, -u0], [i + 1, -u0], [i + 1, -u1]] : [[i, u0], [i, u1], [i + 1, u1], [i + 1, u0]];
+      for (const [k, u] of corners) {
+        tb.pos.p3(pts[2 * k] + ox[k] * u, ys[k] + lift, pts[2 * k + 1] + oz[k] * u);
+        perVertex(u, s[k], i, tb);
+      }
+      tb.idx.p3(base, base + 1, base + 2);
+      tb.idx.p3(base, base + 2, base + 3);
+    }
+  }
+}
+
+// Point-in-water test from the map polygons (sea = outside land, plus rivers/ponds).
+function makeWaterTest(map) {
+  const bbox = (rings) => {
+    const r = rings[0];
+    let a = Infinity, b = Infinity, c = -Infinity, d = -Infinity;
+    for (let i = 0; i < r.length; i += 2) { a = Math.min(a, r[i]); c = Math.max(c, r[i]); b = Math.min(b, r[i + 1]); d = Math.max(d, r[i + 1]); }
+    return [a, b, c, d];
+  };
+  const inPoly = (x, z, rings) => {
+    let inside = false;
+    for (const r of rings) {
+      for (let i = 0, j = r.length - 2; i < r.length; j = i, i += 2) {
+        const zi = r[i + 1], zj = r[j + 1];
+        if ((zi > z) !== (zj > z) && x < ((r[j] - r[i]) * (z - zi)) / (zj - zi) + r[i]) inside = !inside;
+      }
+    }
+    return inside;
+  };
+  const land = map.land.map((p) => [p, bbox(p)]), water = map.water.map((p) => [p, bbox(p)]);
+  const hit = (list, x, z) => list.some(([p, bb]) => x >= bb[0] && x <= bb[2] && z >= bb[1] && z <= bb[3] && inPoly(x, z, p));
+  return (x, z) => hit(water, x, z) || !hit(land, x, z);
+}
+
+// Dome roof (OSM roof:shape=dome/onion): rings of the footprint shrinking to the top.
+function addDomeRoof(b, ring, base, h, col, seed) {
+  const n = ring.length / 2;
+  const c = b.attrs.color.buf, info = b.attrs.aInfo.buf, nrm = b.attrs.normal.buf;
+  let cx = 0, cz = 0;
+  for (let i = 0; i < n; i++) { cx += ring[2 * i]; cz += ring[2 * i + 1]; }
+  cx /= n; cz /= n;
+  const STEPS = 6;
+  const rows = [];
+  for (let k = 0; k <= STEPS; k++) {
+    const a = (k / STEPS) * Math.PI / 2;
+    const s = Math.cos(a), y = base + Math.sin(a) * h;
+    const row = [];
+    for (let i = 0; i < n; i++) {
+      const x = cx + (ring[2 * i] - cx) * s, z = cz + (ring[2 * i + 1] - cz) * s;
+      b.pos.p3(x, y, z); c.p3(col[0], col[1], col[2]); info.p2(4, seed);
+      const nx = (ring[2 * i] - cx), nz = (ring[2 * i + 1] - cz), l = Math.hypot(nx, nz) || 1;
+      nrm.p3(Math.round((nx / l) * Math.cos(a) * 127), Math.round(Math.sin(a) * 127), Math.round((nz / l) * Math.cos(a) * 127));
+      row.push(b.vcount - 1);
+    }
+    rows.push(row);
+  }
+  for (let k = 0; k < STEPS; k++) {
+    for (let i = 0; i < n; i++) {
+      const j = (i + 1) % n;
+      const a0 = rows[k][i], a1 = rows[k][j], b0 = rows[k + 1][i], b1 = rows[k + 1][j];
+      b.idx.p3(a0, a1, b1); b.idx.p3(a0, b1, b0);
+    }
+  }
 }
