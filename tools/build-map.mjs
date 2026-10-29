@@ -11,7 +11,7 @@ import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 import { PLAY_BBOX, WATER_BBOX, ORIGIN } from './config.mjs';
 import * as G from './geo.mjs';
-import { solveElevations, railProfile, ROAD_FLAGS } from './elevation.mjs';
+import { solveElevations, ROAD_FLAGS } from './elevation.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const cacheDir = path.join(here, '.cache');
@@ -720,19 +720,143 @@ function buildWater(els) {
 }
 
 // ===================================================================== RAIL
-function buildRail(els) {
-  const out = [];
+// Service bits for rail ways (which trains run on them).
+export const RAIL_SVC = { RED: 1, ORANGE: 2, BLUE: 4, GREEN: 8, COMMUTER: 16, AMTRAK: 32, FREIGHT: 64 };
+
+function railServices(transit) {
+  const map = new Map();
+  for (const r of transit) {
+    if (r.type !== 'relation') continue;
+    const t = r.tags || {};
+    const n = `${t.name || ''} ${t.ref || ''}`.toLowerCase();
+    let bit = 0;
+    if (t.route === 'subway') bit = n.includes('red') ? RAIL_SVC.RED : n.includes('orange') ? RAIL_SVC.ORANGE : n.includes('blue') ? RAIL_SVC.BLUE : 0;
+    else if (t.route === 'light_rail' || t.route === 'tram') bit = n.includes('green') ? RAIL_SVC.GREEN : 0;
+    else if (t.route === 'train') bit = /amtrak|acela|downeaster|lake shore|northeast regional/.test(n) ? RAIL_SVC.AMTRAK : RAIL_SVC.COMMUTER;
+    if (!bit) continue;
+    for (const m of r.members || []) if (m.type === 'way') map.set(m.ref, (map.get(m.ref) || 0) | bit);
+  }
+  return map;
+}
+
+// Rail network: nodes (OSM nodes + 10 m densified points), ways with service
+// masks, and node flags for tunnel portals, stops, buffer stops and map edges.
+export const RAIL_NODE = { PORTAL: 1, STOP: 2, BUFFER: 4, EDGE: 8 };
+export const RAIL_WAY = { BRIDGE: 1, YARD: 2, CROSSOVER: 4 };
+function buildRail(els, transit) {
+  const svcMap = railServices(transit);
+  const stopIds = new Set(), bufferIds = new Set();
+  for (const e of transit) {
+    if (e.type !== 'node') continue;
+    const t = e.tags || {};
+    if (t.railway === 'buffer_stop') bufferIds.add(e.id);
+    else if (/^(stop|station|halt|tram_stop)$/.test(t.railway || '') || t.public_transport === 'stop_position') stopIds.add(e.id);
+  }
+  const nodeIndex = new Map(), nodes = [], osmId = [], ways = [];
+  const tunnelNodes = new Set();
+  const nodeOf = (id, g) => {
+    let i = nodeIndex.get(id);
+    if (i === undefined) { i = nodes.length / 2; nodeIndex.set(id, i); nodes.push(r1(px(g.lon)), r1(pz(g.lat))); osmId.push(id); }
+    return i;
+  };
   for (const el of els) {
     const t = el.tags || {};
-    if (isTunnel(t) || t.service === 'yard' && false) continue;
-    if (!el.geometry) continue;
-    const pts = el.geometry.map(proj).filter((p) => inBox(PLAY_M, p[0], p[1]));
-    if (pts.length < 2) continue;
+    if (!el.geometry || !el.nodes) continue;
+    if (isTunnel(t)) { for (const id of el.nodes) tunnelNodes.add(id); continue; }
     const kind = t.railway === 'rail' ? 0 : t.railway === 'subway' ? 1 : 2;
-    out.push({ kind, bridge: isBridge(t), pts: G.simplifyLine(pts, 0.2) });
+    let svc = svcMap.get(el.id) || 0;
+    if (!svc) {
+      const nm = `${t.name || ''} ${t.operator || ''}`;
+      if (/Red Line/.test(nm)) svc = RAIL_SVC.RED;
+      else if (/Orange Line/.test(nm)) svc = RAIL_SVC.ORANGE;
+      else if (/Blue Line/.test(nm)) svc = RAIL_SVC.BLUE;
+      else if (/Green Line/.test(nm)) svc = RAIL_SVC.GREEN;
+      else if (/Grand Junction/.test(nm)) svc = RAIL_SVC.FREIGHT;
+    }
+    const flags = (isBridge(t) ? RAIL_WAY.BRIDGE : 0) | (/yard|siding|spur/.test(t.service || '') ? RAIL_WAY.YARD : 0) | (t.service === 'crossover' ? RAIL_WAY.CROSSOVER : 0);
+    // Split into runs inside the padded play area; densify every 10 m.
+    const g = el.geometry;
+    let run = null;
+    const flush = () => { if (run && run.length >= 2) ways.push({ kind, flags, svc, nodes: run }); run = null; };
+    for (let i = 0; i < g.length; i++) {
+      const p = proj(g[i]);
+      const inside = inBox(PLAY_M, p[0], p[1]);
+      const prevIn = i > 0 && inBox(PLAY_M, ...proj(g[i - 1]));
+      if (!inside && !prevIn) { flush(); continue; }
+      if (!run) run = [];
+      if (run.length) {
+        const a = proj(g[i - 1]);
+        const L = Math.hypot(p[0] - a[0], p[1] - a[1]);
+        const extra = Math.ceil(L / 10) - 1;
+        for (let q = 1; q <= extra; q++) {
+          const f = q / (extra + 1);
+          run.push(nodes.length / 2);
+          nodes.push(r1(a[0] + (p[0] - a[0]) * f), r1(a[1] + (p[1] - a[1]) * f));
+          osmId.push(-1);
+        }
+      } else if (i > 0 && !inBox(PLAY_M, ...proj(g[i - 1]))) {
+        run.push(nodeOf(el.nodes[i - 1], g[i - 1]));
+      }
+      run.push(nodeOf(el.nodes[i], g[i]));
+      if (!inside) flush();
+    }
+    flush();
   }
-  log(`rail lines: ${out.length}`);
-  return out;
+  const N = nodes.length / 2;
+  const flags = new Uint8Array(N);
+  const deg = new Uint16Array(N);
+  for (const w of ways) for (let i = 0; i < w.nodes.length; i++) deg[w.nodes[i]] += i === 0 || i === w.nodes.length - 1 ? 1 : 2;
+  for (let i = 0; i < N; i++) {
+    const id = osmId[i];
+    if (id >= 0 && tunnelNodes.has(id)) flags[i] |= RAIL_NODE.PORTAL;
+    if (id >= 0 && stopIds.has(id)) flags[i] |= RAIL_NODE.STOP;
+    if (id >= 0 && bufferIds.has(id)) flags[i] |= RAIL_NODE.BUFFER;
+    const x = nodes[2 * i], z = nodes[2 * i + 1];
+    if (deg[i] === 1 && !(flags[i] & RAIL_NODE.PORTAL) && !inBox(grow(PLAY, -60), x, z)) flags[i] |= RAIL_NODE.EDGE;
+  }
+  log(`rail: ${ways.length} ways, ${N} nodes, ${[...flags].filter((f) => f & RAIL_NODE.PORTAL).length} portals, ${[...flags].filter((f) => f & RAIL_NODE.STOP).length} stops, ${[...flags].filter((f) => f & RAIL_NODE.BUFFER).length} buffers`);
+  return { nodes, ways, flags };
+}
+
+// Rail heights: bridge chains ramp up from where they meet at-grade track
+// (or a tunnel portal) to a deck that clears what they cross.
+function railElevations(rail, deckAt) {
+  const { nodes, ways, flags } = rail;
+  const N = nodes.length / 2;
+  const elev = new Float32Array(N);
+  const onBridge = new Uint8Array(N), onGround = new Uint8Array(N), deck = new Float32Array(N);
+  const nbr = Array.from({ length: N }, () => []);
+  for (const w of ways) {
+    const b = w.flags & RAIL_WAY.BRIDGE;
+    const d = b ? deckAt(w) : 0;
+    for (let i = 0; i < w.nodes.length; i++) {
+      const n = w.nodes[i];
+      if (b) { onBridge[n] = 1; deck[n] = Math.max(deck[n], d); } else onGround[n] = 1;
+      if (b && i) {
+        const a = w.nodes[i - 1];
+        const L = Math.hypot(nodes[2 * n] - nodes[2 * a], nodes[2 * n + 1] - nodes[2 * a + 1]);
+        nbr[a].push(n, L); nbr[n].push(a, L);
+      }
+    }
+  }
+  // Multi-source Dijkstra (simple, small graph) from bridge nodes touching ground/portals/ends.
+  const dist = new Float64Array(N).fill(Infinity);
+  const q = [];
+  for (let i = 0; i < N; i++) {
+    if (!onBridge[i]) continue;
+    if (onGround[i] || flags[i] & (RAIL_NODE.PORTAL | RAIL_NODE.EDGE) || nbr[i].length <= 2) { dist[i] = 0; q.push(i); }
+  }
+  while (q.length) {
+    let bi = 0;
+    for (let k = 1; k < q.length; k++) if (dist[q[k]] < dist[q[bi]]) bi = k;
+    const u = q.splice(bi, 1)[0];
+    for (let k = 0; k < nbr[u].length; k += 2) {
+      const v = nbr[u][k], nd = dist[u] + nbr[u][k + 1];
+      if (nd < dist[v]) { if (dist[v] === Infinity) q.push(v); dist[v] = nd; }
+    }
+  }
+  for (let i = 0; i < N; i++) if (onBridge[i] && !onGround[i]) elev[i] = deck[i] * Math.min(1, (Number.isFinite(dist[i]) ? dist[i] : 0) / 55);
+  return elev;
 }
 
 // =================================================================== PLACES
@@ -850,7 +974,8 @@ const land = buildLand(waterEls.filter((e) => e.tags && e.tags.natural === 'coas
 const water = buildWater(waterEls);
 const { buildings } = buildBuildings(load('buildings'));
 const { areas, pierLines } = buildAreas([...load('green'), ...load('paved')]);
-const rail = buildRail(load('rail'));
+const rail = buildRail(load('rail'), load('transit'));
+const railPts = (w) => w.nodes.map((n) => [rail.nodes[2 * n], rail.nodes[2 * n + 1]]);
 const places = buildPlaces(load('places'));
 
 // ---- raster: water / land / features
@@ -872,7 +997,7 @@ const roadPts = (r) => r.nodes.map((n) => [nodes[2 * n], nodes[2 * n + 1]]);
 const SIDEWALK = 2.4;
 const hasSidewalk = (r) => r.cls >= 2 && r.cls <= 6 && !(r.flags & 4);
 const isWaterAt = (x, z) => !!(rasterAt(x, z) & B_WATER) && !(rasterAt(x, z) & B_PAVED);
-const { elev } = solveElevations(roadData, { isWater: isWaterAt, railLines: rail.filter((r) => !r.bridge).map((r) => r.pts), log });
+const { elev } = solveElevations(roadData, { isWater: isWaterAt, railLines: rail.ways.filter((w) => !(w.flags & 1)).map(railPts), log });
 
 for (const b of buildings) if (b.minH < 3) rasterPolygon(b.poly, 'set', B_BLDG);
 for (const r of roadData.roads) {
@@ -880,31 +1005,22 @@ for (const r of roadData.roads) {
   const pts = roadPts(r);
   rasterLine(pts, r.width / 2 + (hasSidewalk(r) ? SIDEWALK : 0.3), B_ROAD);
 }
-// Rail bridges: raise decorative tracks with simple trapezoid ramps, matching
-// an adjacent road bridge deck (e.g. the Red Line on the Longfellow) if any.
+// Rail bridges: match an adjacent road bridge deck (e.g. the Red Line on the
+// Longfellow), else clear water (3 m) or roads (6.5 m).
 const bridgeNodes = [];
 for (const r of roadData.roads) if (r.flags & ROAD_FLAGS.BRIDGE) for (const n of r.nodes) if (elev[n] > 0.5) bridgeNodes.push([nodes[2 * n], nodes[2 * n + 1], elev[n]]);
-for (const rl of rail) {
-  if (!rl.bridge) continue;
-  const dense = [];
-  for (let i = 0; i < rl.pts.length; i++) {
-    if (i) {
-      const a = rl.pts[i - 1], b = rl.pts[i];
-      const n = Math.ceil(Math.hypot(b[0] - a[0], b[1] - a[1]) / 10);
-      for (let k = 1; k < n; k++) dense.push([a[0] + ((b[0] - a[0]) * k) / n, a[1] + ((b[1] - a[1]) * k) / n]);
-    }
-    dense.push(rl.pts[i]);
-  }
+const railY = railElevations(rail, (w) => {
+  const pts = railPts(w);
   let wet = false, road = false;
-  for (const p of dense) { if (isWaterAt(p[0], p[1])) wet = true; if (rasterAt(p[0], p[1]) & B_ROAD) road = true; }
-  rl.pts = dense;
-  const mid = dense[Math.floor(dense.length / 2)];
+  for (const p of pts) { if (isWaterAt(p[0], p[1])) wet = true; if (rasterAt(p[0], p[1]) & B_ROAD) road = true; }
+  // Share a road deck only when the track runs on it (within ~15 m of a deck node).
+  const mid = pts[Math.floor(pts.length / 2)];
   let match = 0;
-  for (const [x, z, e] of bridgeNodes) if (Math.abs(x - mid[0]) < 40 && Math.abs(z - mid[1]) < 40) match = Math.max(match, e);
-  rl.elev = railProfile(dense, match || (wet ? 3.0 : road ? 6.5 : 1.0));
-}
+  for (const [x, z, e] of bridgeNodes) if (Math.hypot(x - mid[0], z - mid[1]) < 15) match = Math.max(match, e);
+  return match || (wet ? 3.0 : road ? 6.5 : 1.0);
+});
 for (const p of roadData.paths) rasterLine(p.pts, p.width / 2, B_PATH);
-for (const rl of rail) rasterLine(rl.pts, 2.0, B_RAIL);
+for (const w of rail.ways) rasterLine(railPts(w), 2.0, B_RAIL);
 log('raster: roads/buildings done');
 
 // ---- buildings blocking roads: make them non-solid
@@ -1045,8 +1161,12 @@ const out = {
   water: water.map((p) => p.map(flat)),
   // [type, [[outer], [hole]...]]
   areas: areas.map((a) => [a.type, a.poly.map(flat)]),
-  // [kind, bridge, [x,z,...], [elev*10 per point] (bridges only)]
-  rail: rail.map((r) => [r.kind, r.bridge ? 1 : 0, flat(r.pts), r.elev ? r.elev.map((e) => Math.round(e * 10)) : []]),
+  // Rail network: node x,z; node elevation*10; node flags (1 portal, 2 stop, 4 buffer, 8 map edge);
+  // ways [kind(0 rail,1 subway,2 light rail), flags(1 bridge,2 yard,4 crossover), services, [node...]]
+  railNodes: rail.nodes,
+  railY: Array.from(railY, (e) => Math.round(e * 10)),
+  railFlags: Array.from(rail.flags),
+  railWays: rail.ways.map((w) => [w.kind, w.flags, w.svc, w.nodes]),
   trees,
   places,
   landmarks,

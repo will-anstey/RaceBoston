@@ -249,8 +249,8 @@ export class Traffic {
   }
 
   // ------------------------------------------------------------ spawning
-  _spawn() {
-    const g = this.graph, car = this.g.car, cam = this.g.camera;
+  _spawn(car = this.g.car) {
+    const g = this.graph, cam = this.g.camera;
     const camF = new THREE.Vector3();
     cam.getWorldDirection(camF);
     for (let attempt = 0; attempt < 6; attempt++) {
@@ -356,21 +356,22 @@ export class Traffic {
   }
 
   // -------------------------------------------------------------- update
-  update(dt) {
+  // focus: where traffic lives (the player's car, or the fly camera's view).
+  update(dt, focus = this.g.car) {
     this.time += dt;
     const player = this.g.car;
     const px = player.x, pz = player.z;
     this._signalTimer -= dt;
-    if (this._signalTimer <= 0) { this._signalTimer = 0.25; this._updateSignalVisuals(px, pz); }
+    if (this._signalTimer <= 0) { this._signalTimer = 0.25; this._updateSignalVisuals(focus.x, focus.z); }
 
     this.spawnTimer -= dt;
-    if (this.spawnTimer <= 0 && this.cars.length < this.target) { this.spawnTimer = 0.15; this._spawn(); }
+    if (this.spawnTimer <= 0 && this.cars.length < this.target) { this.spawnTimer = 0.15; this._spawn(focus); }
     while (this.cars.length > this.target) this._release(this.cars.pop());
 
     const roads = this.map.roads, g = this.graph;
     for (let i = this.cars.length - 1; i >= 0; i--) {
       const c = this.cars[i];
-      const dP = Math.hypot(c.x - px, c.z - pz);
+      const dP = Math.hypot(c.x - focus.x, c.z - focus.z);
       if (dP > 480 || (c.wrecked && c.wreckTime > 25 && dP > 120) || c.stuck > 30) {
         this._release(c);
         this.cars.splice(i, 1);

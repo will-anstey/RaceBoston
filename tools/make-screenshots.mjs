@@ -90,6 +90,31 @@ try {
     console.log('wrote', file);
   }
   await page.evaluate(() => { const g = RB.game; g.state = 'play'; g.hud.show(true); });
+  // A Red Line train crossing the Longfellow, seen from the air in fly mode.
+  await page.evaluate(() => { RB.game.setSetting('traffic', 40); RB.game.beginFly(); RB.game.hud.show(false); });
+  const redOk = await page.evaluate(async () => {
+    const g = RB.game, T = g.trains, f = g.fly;
+    const l = g.map.landmarks.find((m) => m.name === 'Longfellow Bridge');
+    f.x = l.x; f.z = l.z + 60; f.y = 60; f.pitch = -0.5;
+    for (let k = 0; k < 60; k++) {
+      await new Promise((r) => setTimeout(r, 1000));
+      for (const t of T.trains) {
+        if (t.svc.id !== 'red') continue;
+        const p = T._sample(t, t.head - t.length / 2, {});
+        if (p.y < 4 || Math.hypot(p.x - l.x, p.z - l.z) > 400) continue;
+        const q = T._sample(t, t.head, {});
+        const dx = q.x - p.x, dz = q.z - p.z, n = Math.hypot(dx, dz) || 1;
+        f.x = p.x + (-dz / n) * 45 + (dx / n) * 40; f.z = p.z + (dx / n) * 45 + (dz / n) * 40; f.y = p.y + 14;
+        f.yaw = Math.atan2(p.x - f.x, -(p.z - f.z)); f.pitch = -0.22;
+        return true;
+      }
+    }
+    return false;
+  });
+  await sleep(500);
+  if (redOk) await page.screenshot({ path: path.join(docs, 'screenshot-redline.jpg'), type: 'jpeg', quality: 86 });
+  console.log('wrote screenshot-redline.jpg', redOk);
+  await page.evaluate(() => { RB.game.exitFly(false); RB.game.hud.show(true); });
   // Map with a GPS route across town.
   await page.evaluate(() => {
     const g = RB.game;

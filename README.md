@@ -5,7 +5,9 @@ An open-world driving game set in Boston, MA, playable in the browser. The city 
 10,700 streets with real names, lanes and one-way rules, the Charles River, the harbor and 18,000 trees.
 
 The roads are 3D: drive over the Zakim and the Harvard Bridge, down the Mass Pike trench, through the
-Big Dig tunnels under downtown, and under the harbor through the Sumner and Callahan tunnels.
+Big Dig tunnels under downtown, and under the harbor through the Sumner and Callahan tunnels. Trains run
+wherever you can see track: the Red Line over the Longfellow, the Green Line down Huntington and Comm Ave,
+and commuter rail and Amtrak into North and South Station. You can also leave the car and fly around.
 
 ![Driving down Commonwealth Avenue in Back Bay](docs/screenshot-drive.jpg)
 
@@ -14,7 +16,7 @@ Big Dig tunnels under downtown, and under the harbor through the Sumner and Call
 | ![Harvard Bridge toward the Back Bay skyline](docs/screenshot-bridge.jpg) | ![The Zakim Bridge at sunset](docs/screenshot-zakim.jpg) |
 | ![Boylston Street at night](docs/screenshot-night.jpg) | ![Inside the Mass Pike tunnel under Back Bay](docs/screenshot-tunnel.jpg) |
 | ![Fenway Park and the Green Monster](docs/screenshot-fenway.jpg) | ![The State House's gold dome](docs/screenshot-statehouse.jpg) |
-| ![Map with a GPS route to Fenway Park](docs/screenshot-map.jpg) | |
+| ![A Red Line train crossing the Longfellow Bridge](docs/screenshot-redline.jpg) | ![Map with a GPS route to Fenway Park](docs/screenshot-map.jpg) |
 
 ## Play
 
@@ -35,6 +37,9 @@ file. It's handy if you host the game on a network, but it isn't required.
 
 - **Garage** – the Sports Coupe does 200 mph flat out and 0-60 in 3.3 s. The Boston Cab and the Townie SUV
   trade speed for weight.
+- **Fly Around** – a ghost camera that goes anywhere, through buildings and underground. Press **G** to
+  start or stop flying, and **Enter** to drop the car on the road below you. On the map (**M**), click
+  a spot to jump there.
 - **Free Roam** – drive anywhere and discover 42 landmarks, including Fenway Park, the State House, the
   USS Constitution, MIT and Northeastern. Press **M** and click the map to set a GPS waypoint.
 - **Races** – 7 checkpoint races between real landmarks, such as the Freedom Trail Dash, Back Bay Sprint,
@@ -58,6 +63,7 @@ file. It's handy if you host the game on a network, but it isn't required.
 | M | Full map with click-to-set GPS waypoints |
 | R | Reset the car onto the nearest road |
 | N | Cycle day / sunset / night |
+| G | Fly mode on/off (mouse look, WASD, Space/Q up and down, Shift fast, wheel for speed, Enter drops the car) |
 | K | Mute |
 | F | Fullscreen |
 | Esc / P | Pause |
@@ -81,6 +87,10 @@ painted on canvases in the browser:
   tiled walls, ceilings and lights, and open cuts get retaining walls. A stencil mask hides anything
   underground except where the ground is actually open. The car has real vertical physics: it follows
   ramps, catches air off crests and can fall off an edge, so stay on the deck.
+- **Trains** – OSM route relations tell which track each line uses. Red, Orange and Blue Line cars,
+  two-car Green Line trolleys with pantographs, MBTA bilevel commuter trains, Amtrak and Grand Junction
+  freight all follow the real track. They stop at stations, reverse at terminals, and slip into tunnel
+  portals. Trains are solid, so don't park on the tracks.
 - **Street signs** – Boston-green name blades on a corner pole at about 2,200 named intersections, with
   standard abbreviations (St, Ave, Sq).
 - **Landmarks** – Fenway Park has a brick arched facade, seating that slopes down to the field, the
@@ -108,6 +118,8 @@ src/                  game code (ES modules, no build step)
   structures.js       bridge decks, pillars, railings, tunnels, cuts, ground mask
   landmarks.js        Fenway Park, the State House dome and other dressed landmarks
   signs.js            street name signs
+  trains.js           trains on the surface rail network
+  fly.js              ghost camera for fly mode
   materials.js        shader patches: windows, lane markings, curbs, water waves
   vehicle.js          arcade car physics; collision.js: walls/trees/surfaces
   traffic.js          AI cars + traffic signals; roadgraph.js: graph + A*
@@ -139,7 +151,8 @@ node tools/test-autodrive.mjs     # an autopilot drives every race end-to-end
 
 `npm test` checks loading, driving, braking and reversing, building collisions, splashing into the
 Charles and respawning, traffic, the coupe's 200 mph top speed and 0-60 time, driving the Harvard Bridge
-deck and the Pike tunnel, signs and landmarks, finishing a race, a taxi fare, GPS routing, every setting,
+deck and the Pike tunnel, signs and landmarks, fly mode (flying through buildings and dropping the car),
+trains running and being solid, finishing a race, a taxi fare, GPS routing, every setting,
 night mode and frame rate.
 It saves screenshots to `tools/screenshots/`. The tests need Google Chrome installed; set `CHROME_PATH`
 if it isn't in the default location.

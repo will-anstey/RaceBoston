@@ -3,7 +3,7 @@
 
 import * as THREE from 'three';
 import earcut from '../vendor/earcut.js';
-import { RC, AREA, SIDEWALK_W, hasSidewalk } from './mapdata.js';
+import { RC, AREA, SIDEWALK_W, hasSidewalk, RAIL_NODE } from './mapdata.js';
 import * as MAT from './materials.js';
 import { hash32, nextFrame } from './util.js';
 import { GeoBuilder, rgb, crossY, addPolygon, polyOffsets, ribbon, meshOf, roofPlan } from './geom.js';
@@ -123,6 +123,7 @@ export async function buildWorld(map, graph, scene, progress = () => {}) {
       }
     }
     add(meshOf(rail.build(), mats.rail, -36));
+    addRailPortals(map, add, mats);
     const g3 = rail3.build();
     if (g3) add(meshOf(g3, mats.rail3d, 0));
     const gd = deck.build();
@@ -757,4 +758,48 @@ function addDomeRoof(b, ring, base, h, col, seed) {
       b.idx.p3(a0, a1, b1); b.idx.p3(a0, b1, b0);
     }
   }
+}
+
+// Concrete portal frames where surface track dives into a tunnel; trains
+// sink below ground just past them (hidden by the ground mask).
+function addRailPortals(map, add, mats) {
+  const N = map.railY.length;
+  if (!N) return;
+  const nb = new Int32Array(N).fill(-1), deg = new Uint8Array(N);
+  for (const w of map.railWays) {
+    const ns = w.nodes;
+    for (let i = 0; i < ns.length; i++) {
+      if (i > 0) { deg[ns[i]]++; nb[ns[i]] = ns[i - 1]; }
+      if (i + 1 < ns.length) { deg[ns[i]]++; nb[ns[i]] = ns[i + 1]; }
+    }
+  }
+  const frame = new GeoBuilder({}), hole = new GeoBuilder({});
+  const P = map.railNodes;
+  for (let n = 0; n < N; n++) {
+    if (!(map.railFlags[n] & RAIL_NODE.PORTAL) || deg[n] !== 1 || nb[n] < 0) continue;
+    const x = P[2 * n], z = P[2 * n + 1], y = map.railY[n];
+    const m = nb[n];
+    let dx = x - P[2 * m], dz = z - P[2 * m + 1];
+    const l = Math.hypot(dx, dz) || 1;
+    dx /= l; dz /= l;             // into the tunnel
+    const rx = -dz, rz = dx;        // across the track
+    const hw = 2.4, h = 5.2, t = 0.7, d = 3;
+    const Q = (a, u, v) => [x + rx * a + dx * u, y + v, z + rz * a + dz * u];
+    // Side walls and lintel (boxes from the mouth 3 m into the hill).
+    for (const s of [-1, 1]) {
+      const a0 = s * hw, a1 = s * (hw + t);
+      frame.quad(Q(a0, 0, 0), Q(a1, 0, 0), Q(a1, 0, h), Q(a0, 0, h));
+      frame.quad(Q(a1, 0, 0), Q(a1, d, 0), Q(a1, d, h), Q(a1, 0, h));
+      frame.quad(Q(a0, 0, 0), Q(a0, d, 0), Q(a0, d, h), Q(a0, 0, h));
+    }
+    frame.quad(Q(-hw - t, 0, h), Q(hw + t, 0, h), Q(hw + t, 0, h + 1.2), Q(-hw - t, 0, h + 1.2));
+    frame.quad(Q(-hw - t, 0, h + 1.2), Q(hw + t, 0, h + 1.2), Q(hw + t, d, h + 1.2), Q(-hw - t, d, h + 1.2));
+    frame.quad(Q(-hw, 0, h), Q(hw, 0, h), Q(hw, d, h), Q(-hw, d, h));
+    // Dark mouth, seen from the open side only.
+    hole.quadFacing(Q(-hw, 0.6, -0.2), Q(hw, 0.6, -0.2), Q(hw, 0.6, h), Q(-hw, 0.6, h), -dx, 0, -dz);
+  }
+  const fg = frame.build();
+  if (fg) add(meshOf(fg, mats.concrete3d, 0, { shadow: true }));
+  const hg = hole.build();
+  if (hg) add(meshOf(hg, new THREE.MeshBasicMaterial({ color: 0x050607 }), 0, { receive: false }));
 }

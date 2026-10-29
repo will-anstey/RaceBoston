@@ -8,6 +8,11 @@ export const AREA = {
   WETLAND: 10, GARDEN: 11, RAILYARD: 12, DIRT: 13, PARKING: 20, PLAZA: 21, PIER: 22, FUEL: 23,
 };
 
+// Rail: which trains run on a way, and node / way flags (tools/build-map.mjs).
+export const RAIL_SVC = { RED: 1, ORANGE: 2, BLUE: 4, GREEN: 8, COMMUTER: 16, AMTRAK: 32, FREIGHT: 64 };
+export const RAIL_NODE = { PORTAL: 1, STOP: 2, BUFFER: 4, EDGE: 8 };
+export const RAIL_WAY = { BRIDGE: 1, YARD: 2, CROSSOVER: 4 };
+
 // Landmark ids assigned by tools/build-map.mjs.
 export const LANDMARK = {
   FENWAY: 1, GREEN_MONSTER: 2, STATE_HOUSE: 3, HANCOCK: 4, PRUDENTIAL: 5, CUSTOM_HOUSE: 6, OLD_NORTH: 7,
@@ -82,10 +87,25 @@ function decode(raw) {
     land: raw.land.map((p) => p.map(ring)),
     water: raw.water.map((p) => p.map(ring)),
     areas: raw.areas.map(([type, p]) => ({ type, rings: p.map(ring) })),
-    rail: raw.rail.map(([kind, bridge, pts, elev]) => ({ kind, bridge: !!bridge, pts: ring(pts), ys: elev && elev.length ? Float32Array.from(elev, (e) => e / 10) : null })),
+    ...decodeRail(raw),
     trees: Float32Array.from(raw.trees),
     places: raw.places.map(([name, x, z, rank]) => ({ name, x, z, rank })),
     landmarks: raw.landmarks.map(([name, kind, x, z, node]) => ({ name, kind, x, z, node })),
     signals: Int32Array.from(raw.signals),
   };
+}
+
+function decodeRail(raw) {
+  const railNodes = Float32Array.from(raw.railNodes || []);
+  const railY = Float32Array.from(raw.railY || [], (e) => e / 10);
+  const railFlags = Uint8Array.from(raw.railFlags || []);
+  const railWays = (raw.railWays || []).map(([kind, flags, svc, nodes]) => ({ kind, flags, svc, nodes: Int32Array.from(nodes) }));
+  // Polylines for drawing track (with heights where raised).
+  const rail = railWays.map((w) => {
+    const pts = new Float32Array(w.nodes.length * 2), ys = new Float32Array(w.nodes.length);
+    let raised = false;
+    w.nodes.forEach((n, i) => { pts[2 * i] = railNodes[2 * n]; pts[2 * i + 1] = railNodes[2 * n + 1]; ys[i] = railY[n]; if (Math.abs(ys[i]) > 0.02) raised = true; });
+    return { kind: w.kind, bridge: !!(w.flags & RAIL_WAY.BRIDGE), pts, ys: raised ? ys : null };
+  });
+  return { railNodes, railY, railFlags, railWays, rail };
 }

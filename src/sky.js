@@ -121,6 +121,7 @@ export class Sky {
     this.scene.fog.color.setHex(p.fog);
     this.scene.fog.near = p.fogNear;
     this.scene.fog.far = p.fogFar;
+    this.fogBase = { near: p.fogNear, far: p.fogFar };
     this.renderer.toneMappingExposure = p.exposure;
     globalUniforms.uNight.value = p.night;
     this.isNight = p.night > 0.9;
@@ -140,6 +141,14 @@ export class Sky {
   }
 
   get fogFar() { return this.scene.fog.far; }
+
+  // See further the higher you fly (altitude in meters; 0 restores the preset).
+  setFogBoost(alt) {
+    if (!this.fogBase) return;
+    const a = Math.max(0, alt);
+    this.scene.fog.near = this.fogBase.near + a * 1.6;
+    this.scene.fog.far = Math.min(8500, this.fogBase.far + a * 4);
+  }
 
   // Keep the dome around the camera and the shadow box around the focus.
   update(camera, focus) {

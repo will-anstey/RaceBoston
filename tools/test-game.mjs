@@ -282,6 +282,78 @@ try {
   check('street signs at intersections', extras.posts > 1500, `${extras.posts} sign posts`);
   check('landmarks dressed (Fenway etc.)', extras.lm > 40 && extras.props > 30 && extras.field, `${extras.lm} landmark parts, ${extras.props} props, Fenway field ${extras.field}`);
 
+  // ---- fly mode: G toggles, keys fly through buildings, Enter drops the car
+  await page.evaluate(() => RB.game.begin('free'));
+  await sleep(300);
+  await page.keyboard.press('KeyG');
+  await sleep(400);
+  s = await st();
+  check('G enters fly mode', s.state === 'fly' && s.fly, `state ${s.state}`);
+  const f0 = s.fly;
+  await page.keyboard.down('KeyW'); await page.keyboard.down('Space');
+  await sleep(1500);
+  await page.keyboard.up('KeyW'); await page.keyboard.up('Space');
+  s = await st();
+  check('flies forward and up', Math.hypot(s.fly.x - f0.x, s.fly.z - f0.z) > 15 && s.fly.y > f0.y + 10, `moved ${Math.hypot(s.fly.x - f0.x, s.fly.z - f0.z).toFixed(0)} m, climbed ${(s.fly.y - f0.y).toFixed(0)} m`);
+  // Fly straight through a tall building (ghost: no collisions).
+  const through = await page.evaluate(async () => {
+    const g = RB.game, f = g.fly;
+    const b = g.map.landmarks.find((l) => l.name === 'Prudential Tower');
+    f.x = b.x - 80; f.z = b.z; f.y = 60; f.yaw = Math.PI / 2; f.pitch = 0;
+    await new Promise((r) => setTimeout(r, 50));
+    return { x0: f.x, bx: b.x };
+  });
+  await page.keyboard.down('KeyW'); await page.keyboard.down('ShiftLeft');
+  await sleep(2000);
+  await page.keyboard.up('KeyW'); await page.keyboard.up('ShiftLeft');
+  s = await st();
+  check('flies through buildings', s.fly.x > through.bx + 20, `x ${through.x0.toFixed(0)} -> ${s.fly.x.toFixed(0)} past the Prudential at ${through.bx.toFixed(0)}`);
+  await shot('t16_fly');
+  await page.keyboard.press('Enter');
+  await sleep(600);
+  s = await st();
+  const dropped = await page.evaluate(() => { const c = RB.game.car, r = RB.game.graph.nearestRoad3D(c.x, c.z, c.y, 8); return !!r; });
+  check('Enter drops the car onto a road below', s.state === 'play' && dropped, `state ${s.state}, street "${s.street}", y ${s.y.toFixed(1)}`);
+
+  // ---- trains run on the surface network
+  await page.evaluate(() => { RB.game.setSetting('traffic', 40); });
+  const tr = await page.evaluate(async () => {
+    const g = RB.game, T = g.trains;
+    const l = g.map.landmarks.find((m) => m.name === 'Longfellow Bridge');
+    g.placeCar(l.x - 60, l.z + 40, 0.9);
+    const seen = new Set(), moved = [];
+    const start = new Map();
+    for (let k = 0; k < 25; k++) {
+      await new Promise((r) => setTimeout(r, 1000));
+      for (const t of T.trains) {
+        seen.add(t.svc.id);
+        if (!start.has(t)) start.set(t, t.head);
+        else if (t.head - start.get(t) > 30) moved.push(t.svc.id);
+      }
+    }
+    return { seen: [...seen], moved: [...new Set(moved)], n: T.trains.length, boxes: T.carBoxes.length / 9 };
+  });
+  check('trains spawn and run (Red Line near the Longfellow)', tr.n >= 3 && tr.moved.length >= 2 && tr.seen.includes('red'), `${tr.n} trains / ${tr.boxes} cars; seen ${tr.seen.join(', ')}; moving ${tr.moved.join(', ')}`);
+  const block = await page.evaluate(async () => {
+    const g = RB.game, T = g.trains;
+    // Park the car on the track ahead of a moving surface train: it must be pushed off, not overlap.
+    const t = T.trains.find((q) => T._sample(q, q.head, {}).y > -1 && q.v > 3);
+    if (!t) return null;
+    const p = T._sample(t, t.head + 2, {});
+    g.placeCar(p.x, p.z, 0, p.y);
+    await new Promise((r) => setTimeout(r, 2500));
+    const c = g.car;
+    let minD = Infinity;
+    for (let i = 0; i < T.carBoxes.length; i += 9) {
+      const B = T.carBoxes;
+      const along = Math.max(-B[i + 5], Math.min(B[i + 5], (c.x - B[i]) * B[i + 3] + (c.z - B[i + 2]) * B[i + 4]));
+      minD = Math.min(minD, Math.hypot(c.x - (B[i] + B[i + 3] * along), c.z - (B[i + 2] + B[i + 4] * along)) - B[i + 6]);
+    }
+    return { gap: minD, svc: t.svc.id };
+  });
+  if (block) check('trains are solid', block.gap > 0.4, `car-to-${block.svc} clearance ${block.gap.toFixed(2)} m`);
+  else check('trains are solid', false, 'no surface train found');
+
   // ---- race: teleport through checkpoints
   await page.evaluate(() => RB.game.begin('race', 'backbay'));
   await sleep(500);

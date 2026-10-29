@@ -100,6 +100,7 @@ export class Menu {
     const g = this.g;
     switch (act) {
       case 'free': g.begin('free'); break;
+      case 'fly': g.beginFly(); break;
       case 'races': this.show('races'); break;
       case 'race': g.begin('race', arg); break;
       case 'taxi': g.begin('taxi'); break;
@@ -138,6 +139,7 @@ export class Menu {
       <p class="tagline">Drive the real streets of Boston, built from OpenStreetMap: ${g.map.buildings.length.toLocaleString()} buildings, ${g.map.roads.length.toLocaleString()} roads, the Charles, the harbor and every one-way street.</p>
       <div class="menu-list">
         <button class="menu-btn primary" data-act="free"><span>Free Roam<span class="desc">Explore and discover ${g.map.landmarks.length} landmarks (${g.missions.discovered.size} found)</span></span><span class="meta">&#9654;</span></button>
+        <button class="menu-btn" data-act="fly"><span>Fly Around<span class="desc">Ghost camera: fly anywhere, through anything</span></span><span class="meta">&#9654;</span></button>
         <button class="menu-btn" data-act="races"><span>Races<span class="desc">${RACES.length} checkpoint races &middot; ${golds} gold</span></span><span class="meta">&#9656;</span></button>
         <button class="menu-btn" data-act="taxi"><span>Taxi Shift<span class="desc">Best shift $${g.missions.taxiBest.toFixed(2)}</span></span><span class="meta">&#9656;</span></button>
         <button class="menu-btn" data-act="garage"><span>Garage<span class="desc">${esc(car.name)}</span></span><span class="meta">&#9656;</span></button>
@@ -179,6 +181,7 @@ export class Menu {
       ['W / &uarr;', 'Accelerate'], ['S / &darr;', 'Brake / reverse'], ['A D / &larr; &rarr;', 'Steer'],
       ['Space', 'Handbrake (drift)'], ['Shift', 'Boost'], ['H', 'Horn'], ['B', 'Look back'],
       ['C', 'Change camera'], ['M', 'Map &amp; GPS waypoint'], ['R', 'Reset car to road'], ['N', 'Day / sunset / night'],
+      ['G', 'Fly mode (ghost camera)'], ['Fly mode', 'Mouse to look (click), WASD, Space/Q up/down, Shift fast, wheel speed, Enter drop the car'],
       ['K', 'Mute'], ['F', 'Fullscreen'], ['Esc / P', 'Pause'],
       ['Gamepad', 'RT gas, LT brake, A handbrake, B boost, X reset, Y camera, Start pause'],
     ].map(([k, v]) => `<b>${k}</b><span>${v}</span>`).join('');
@@ -192,6 +195,7 @@ export class Menu {
     return `<div class="menu-title">Paused</div><div class="menu-list">
       <button class="menu-btn primary" data-act="resume"><span>Resume</span></button>${restart}
       <button class="menu-btn" data-act="free"><span>Free Roam</span></button>
+      <button class="menu-btn" data-act="fly"><span>Fly Around</span></button>
       <button class="menu-btn" data-act="races"><span>Races</span><span class="meta">&#9656;</span></button>
       <button class="menu-btn" data-act="taxi"><span>Taxi Shift</span></button>
       <button class="menu-btn" data-act="garage"><span>Garage</span><span class="meta">&#9656;</span></button>

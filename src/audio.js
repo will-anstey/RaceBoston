@@ -64,8 +64,24 @@ export class AudioFX {
     const hf = ctx.createBiquadFilter(); hf.type = 'lowpass'; hf.frequency.value = 1800;
     for (const f of [392, 494]) { const o = ctx.createOscillator(); o.type = 'square'; o.frequency.value = f; o.connect(hf); o.start(); }
     hf.connect(this.hGain).connect(this.master);
+    // Train rumble: low filtered noise.
+    this.rGain = ctx.createGain(); this.rGain.gain.value = 0;
+    const rf = ctx.createBiquadFilter(); rf.type = 'lowpass'; rf.frequency.value = 110; rf.Q.value = 0.7;
+    noise().connect(rf).connect(this.rGain).connect(this.master);
     this.rpm = 900;
     this.gear = 1;
+  }
+
+  setRumble(level) {
+    if (this.ctx) this.rGain.gain.setTargetAtTime(Math.max(0, Math.min(1, level)) * 0.55, this.ctx.currentTime, 0.15);
+  }
+
+  // Wind while flying (overrides the driving wind level for this frame).
+  setWind(speed) {
+    if (!this.ctx) return;
+    const t = this.ctx.currentTime;
+    this.wGain.gain.setTargetAtTime(Math.min(1, speed / 140) ** 2 * 0.3, t, 0.2);
+    this.wFilter.frequency.setTargetAtTime(200 + speed * 9, t, 0.2);
   }
 
   setMuted(m) {

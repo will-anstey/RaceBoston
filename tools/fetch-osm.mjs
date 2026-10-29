@@ -82,6 +82,15 @@ const QUERIES = {
   places: `
     node["place"~"^(neighbourhood|suburb|quarter|city|town)$"](${W});
     out body;`,
+  // Transit routes (which rail ways are the Red Line, Green Line, commuter
+  // rail...) and the stops where trains dwell.
+  transit: `
+    (
+      relation["type"="route"]["route"~"^(subway|light_rail|train|tram)$"](${P});
+      node["railway"~"^(stop|station|halt|tram_stop)$"](${P});
+      node["public_transport"="stop_position"](${P});
+    );
+    out body;`,
   // Stadium outline, used to recognise Fenway Park's building parts.
   fenway: `
     relation["name"="Fenway Park"]["leisure"="stadium"](${P});
