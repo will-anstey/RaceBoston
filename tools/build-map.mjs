@@ -12,6 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { PLAY_BBOX, WATER_BBOX, ORIGIN } from './config.mjs';
 import * as G from './geo.mjs';
 import { solveElevations, ROAD_FLAGS } from './elevation.mjs';
+import { buildAero } from './aero.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const cacheDir = path.join(here, '.cache');
@@ -925,6 +926,9 @@ const LANDMARKS = [
   ['Mass General Hospital', /^Massachusetts General Hospital$/, 'hospital', 42.36252, -71.06882],
   ['Castle Island', /^Castle Island$/, 'park', 42.33790, -71.01221],
   ['Christian Science Plaza', /^Christian Science Plaza$/, 'square', 42.34436, -71.08458],
+  ['Logan Airport', /^Terminal C$/, 'airport', 42.36615, -71.01810],
+  ['Piers Park', /^Piers Park$/, 'park', 42.36420, -71.03480],
+  ['Maverick Square', /^Maverick Square$/, 'square', 42.36905, -71.03960],
 ];
 
 function buildLandmarks(els, roadData) {
@@ -977,6 +981,12 @@ const { areas, pierLines } = buildAreas([...load('green'), ...load('paved')]);
 const rail = buildRail(load('rail'), load('transit'));
 const railPts = (w) => w.nodes.map((n) => [rail.nodes[2 * n], rail.nodes[2 * n + 1]]);
 const places = buildPlaces(load('places'));
+const aero = buildAero(load('aero'), { proj, inBox, box: PLAY_M, r1, log });
+const AREA_APRON = 24;
+for (const ring of aero.aprons) {
+  const poly = simplifyPolygon([G.orientOuter(ring)], 0.4);
+  if (poly) areas.push({ type: AREA_APRON, poly, area: -G.signedAreaXZ(poly[0]) });
+}
 
 // ---- raster: water / land / features
 R.fill(B_WATER);
@@ -988,6 +998,10 @@ for (const a of areas) {
   else rasterPolygon(a.poly, 'set', B_NOTREE);
 }
 for (const pl of pierLines) { rasterLine(pl.pts, pl.width / 2, B_PAVED); }
+// Airfield: paved movement areas, and no procedural trees inside the fence.
+for (const ring of aero.aerodromes) rasterPolygon([ring], 'set', B_NOTREE);
+for (const w of aero.ways) if (w.width) rasterLine(w.nodes.map((n) => [aero.nodes[2 * n], aero.nodes[2 * n + 1]]), w.width / 2, B_PAVED);
+for (const r of aero.runways) rasterLine(r.nodes.map((n) => [aero.nodes[2 * n], aero.nodes[2 * n + 1]]), r.width / 2 + 8, B_PAVED);
 // Pier lines only count as piers where they actually cross water.
 log('raster: base layers done');
 const { nodes } = roadData;
@@ -1167,6 +1181,17 @@ const out = {
   railY: Array.from(railY, (e) => Math.round(e * 10)),
   railFlags: Array.from(rail.flags),
   railWays: rail.ways.map((w) => [w.kind, w.flags, w.svc, w.nodes]),
+  // Airport: taxi graph nodes; ways [kind(0 runway,1 taxiway,2 taxilane,3 lead-in,4 connector), width*10, [node...]];
+  // runways [ref, width*10, [node...], startEndName, endEndName]; stands [ref, [node from taxi side to stand]]
+  aero: {
+    nodes: aero.nodes,
+    ways: aero.ways.map((w) => [w.kind, Math.round(w.width * 10), w.nodes]),
+    runways: aero.runways.map((r) => [r.ref, Math.round(r.width * 10), r.nodes, r.ends[0], r.ends[1]]),
+    stands: aero.stands.map((st) => [st.ref, st.nodes]),
+    holds: aero.holds,
+    gates: aero.gates,
+    fence: aero.aerodromes.map(flat),
+  },
   trees,
   places,
   landmarks,

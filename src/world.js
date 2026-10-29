@@ -9,13 +9,14 @@ import { hash32, nextFrame } from './util.js';
 import { GeoBuilder, rgb, crossY, addPolygon, polyOffsets, ribbon, meshOf, roofPlan } from './geom.js';
 import { buildStructures, segCategory, LIFT } from './structures.js';
 import { buildLandmarks } from './landmarks.js';
+import { buildAirport } from './airport.js';
 
 export const LAND_COLOR = 0xb7b2a3;
 const AREA_COLORS = {
   [AREA.PARK]: 0x76a650, [AREA.GRASS]: 0x86b25c, [AREA.PITCH]: 0x5f9f45, [AREA.GOLF]: 0x84bd5e,
   [AREA.CEMETERY]: 0x83a06b, [AREA.WOOD]: 0x5a8a40, [AREA.PLAYGROUND]: 0xc4ae86, [AREA.TRACK]: 0xa65a45,
   [AREA.SAND]: 0xe0cf9c, [AREA.WETLAND]: 0x7c9c6c, [AREA.GARDEN]: 0x7fb05a, [AREA.RAILYARD]: 0x958a7e, [AREA.DIRT]: 0xa8714a,
-  [AREA.PARKING]: 0x87878a, [AREA.PLAZA]: 0xc8c0b2, [AREA.PIER]: 0x9b8a72, [AREA.FUEL]: 0x8c8c8e,
+  [AREA.PARKING]: 0x87878a, [AREA.PLAZA]: 0xc8c0b2, [AREA.PIER]: 0x9b8a72, [AREA.FUEL]: 0x8c8c8e, [AREA.APRON]: 0xa9a8a2,
 };
 const PATH_COLORS = [0xd3c6a6, 0xcbc2b3, 0xa3a7a7, 0xb39f7b];
 const CHUNK = 300;
@@ -270,15 +271,12 @@ export async function buildWorld(map, graph, scene, progress = () => {}) {
   }
   // ------------------------------------------------- bridges / tunnels
   world.structures = buildStructures(map, graph, mats, add, {
-    isGroundRoad: (x, z) => {
-      const hit = graph.nearestRoad(x, z, 12);
-      if (!hit) return false;
-      const rd = map.roads[hit.road];
-      const a = rd.nodes[hit.seg], b = rd.nodes[hit.seg + 1];
-      const y = ny[a] + (ny[b] - ny[a]) * hit.t;
-      return y < 2 && hit.dist < rd.width / 2 + SIDEWALK_W + 1.5;
-    },
+    // Any level, not just the nearest road: under a deck that is usually the
+    // deck itself (Logan's Departures Level sits right over Arrivals).
+    isGroundRoad: (x, z) => graph.roadBelow(x, z, 2, SIDEWALK_W + 1.5),
   });
+  // ------------------------------------------------------- airport
+  world.airport = buildAirport(map, add, mats);
   // ---------------------------------------------------- crosswalks
   {
     const cw = new GeoBuilder({ aUV: [Float32Array, 2, false] });

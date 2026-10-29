@@ -21,7 +21,9 @@ const SERVICES = [
   { id: 'freight', bit: RAIL_SVC.FREIGHT, color: 0x6b3f2a, model: 'boxcar', cars: 7, len: 16.5, wid: 3.1, hgt: 4.1, speed: 8, dwell: 0, weight: 1, loco: 'freight' },
 ];
 const LOCO_LEN = 20.5;
-const MAX_PER_SVC = 12;
+const MAX_PER_SVC = 16;
+// Per density level (Off..Max): trains around the player and spawn interval.
+const DENSITY = [{ n: 0, every: 99 }, { n: 4, every: 3 }, { n: 8, every: 1.6 }, { n: 14, every: 0.9 }, { n: 22, every: 0.45 }];
 const LOOKAHEAD = 320;
 
 // ---------------------------------------------------------------- models
@@ -220,8 +222,11 @@ export class Trains {
     this.carBoxes = [];
   }
 
-  setDensity(trafficSetting) {
-    this.target = trafficSetting <= 0 ? 0 : trafficSetting <= 12 ? 4 : trafficSetting <= 26 ? 7 : 10;
+  setDensity(level) {
+    const d = DENSITY[Math.max(0, Math.min(DENSITY.length - 1, level | 0))];
+    this.target = d.n;
+    this.every = d.every;
+    if (!d.n) this.trains.length = 0;
   }
 
   clear() { this.trains.length = 0; }
@@ -370,7 +375,8 @@ export class Trains {
   // ---- update
   update(dt, focus) {
     this.timer -= dt;
-    if (this.timer <= 0 && this.trains.length < this.target) { this.timer = 1.5; this._spawn(focus); }
+    if (this.timer <= 0 && this.trains.length < this.target) { this.timer = this.every ?? 1.5; this._spawn(focus); }
+    while (this.trains.length > this.target) this.trains.pop();
     const tmp = {}, tmp2 = {};
     for (let i = this.trains.length - 1; i >= 0; i--) {
       const t = this.trains[i];

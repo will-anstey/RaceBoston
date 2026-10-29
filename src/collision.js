@@ -10,7 +10,7 @@ import { segCategory } from './structures.js';
 
 export const SURF = { WATER: 1, ROAD: 2, GRASS: 4, PAVED: 8, BLDG: 16, CUT: 32 };
 const GREEN = new Set([AREA.PARK, AREA.GRASS, AREA.PITCH, AREA.GOLF, AREA.CEMETERY, AREA.WOOD, AREA.GARDEN, AREA.WETLAND, AREA.PLAYGROUND]);
-const PAVED = new Set([AREA.PARKING, AREA.PLAZA, AREA.FUEL, AREA.TRACK, AREA.RAILYARD, AREA.DIRT]);
+const PAVED = new Set([AREA.PARKING, AREA.PLAZA, AREA.FUEL, AREA.TRACK, AREA.RAILYARD, AREA.DIRT, AREA.APRON]);
 const CAR_H = 1.5;
 const STEP_UP = 0.9;
 
@@ -56,6 +56,12 @@ export class CollisionWorld {
       else if (PAVED.has(a.type)) { s.polygon(a.rings, SURF.PAVED); s.polygon(a.rings, SURF.GRASS, true); }
     }
     for (const p of map.piers) s.line(p.pts, p.width / 2, SURF.PAVED);
+    // Airfield pavement: runways (with shoulders), taxiways, apron around stands.
+    if (map.aero) {
+      const A = map.aero, P = (nodes) => Float32Array.from(Array.from(nodes).flatMap((n) => [A.nodes[2 * n], A.nodes[2 * n + 1]]));
+      for (const r of A.runways) s.line(P(r.nodes), r.width / 2 + 7.5, SURF.PAVED);
+      for (const w of A.ways) s.line(P(w.nodes), w.kind === 2 ? 26 : w.kind >= 3 ? 30 : w.width / 2, SURF.PAVED);
+    }
     for (const p of map.paths) s.line(p.pts, p.width / 2 + 0.3, SURF.PAVED);
     const nodes = map.nodes, ny = map.nodeY;
     // Only at-grade road segments count as "road" at ground level.

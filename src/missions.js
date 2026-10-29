@@ -31,6 +31,10 @@ export const RACES = [
     stops: ['TD Garden', 'Museum of Science', 'Mass General Hospital', 'City Hall', 'Chinatown Gate', 'Public Garden'],
   },
   {
+    id: 'logan', name: 'Logan Express', blurb: 'South Station to Logan through the Ted Williams Tunnel, home under the harbor.',
+    stops: ['South Station', 'Tea Party Museum', 'Logan Airport', 'Maverick Square', 'Piers Park', 'Old North Church'],
+  },
+  {
     id: 'grand', name: 'The Grand Tour', blurb: 'An endurance run across the whole map.',
     stops: ['Fenway Park', 'Kenmore Square', 'Boston University', 'Harvard Bridge', 'Kendall Square', 'Longfellow Bridge', 'TD Garden', 'Bunker Hill Monument', 'Old North Church', 'New England Aquarium', 'South Station', 'Institute of Contemporary Art', 'Christian Science Plaza', 'Fenway Park'],
   },
@@ -43,7 +47,11 @@ const QUOTES = [
   "Left on red? This is Boston, I won't tell.", "I've got a flight out of Logan in an hour!", 'Hurry, the Marathon starts soon!',
 ];
 
-const MEDAL_SPEED = { gold: 16.5, silver: 13, bronze: 10 };
+// Medal times are multiples of an ideal lap (see idealTime), so a route
+// that is mostly motorway gets a target as hard as one through Back Bay.
+const MEDAL_PACE = { gold: 1.36, silver: 1.73, bronze: 2.24 };
+const IDEAL_SPEED = [60, 40, 28, 26, 24, 20, 14, 12]; // m/s on a straight, by road class
+const IDEAL = { lat: 11, acc: 6.5, brake: 12, rMin: 9 };
 const CP_RADIUS = 13;
 
 export class Missions {
@@ -51,6 +59,7 @@ export class Missions {
     this.g = game;
     this.mode = 'free';
     this.route = null;
+    this.routePrev = null;
     this.routeTarget = null;
     this.routeTimer = 0;
     this.discovered = new Set(loadJSON('rb.discovered', []));
@@ -137,16 +146,27 @@ export class Missions {
     this.routeTimer -= dt;
     let off = Infinity;
     if (this.route) {
-      // Trim passed points and measure distance from the route.
+      // r[0] is the car and routePrev the last route node it passed. The next
+      // node is passed once the car is nearer the leg after it than the leg
+      // leading to it: a lane offset doesn't stall the route, and a hairpin
+      // whose return leg runs alongside (behind a wall) isn't skipped.
       const r = this.route;
-      let best = 0, bd = Infinity;
-      for (let i = 0; i < Math.min(r.length - 1, 40); i++) {
-        const d = distToSeg(car.x, car.z, r[i], r[i + 1]);
-        if (d < bd) { bd = d; best = i; }
+      while (r.length > 2) {
+        const a = r[1];
+        if (distToSeg(car.x, car.z, a, r[2]) >= distToSeg(car.x, car.z, this.routePrev, a)) break;
+        this.routePrev = a;
+        r.splice(1, 1);
       }
-      off = bd;
-      if (best > 0) r.splice(0, best);
-      if (r.length) r[0] = [car.x, car.z];
+      // Off the route: far from the leg being driven, or on another level
+      // (in the underpass below the street the route takes, or vice versa).
+      const p = this.routePrev, b = r[1];
+      off = Math.min(distToSeg(car.x, car.z, p, b), r.length > 2 ? distToSeg(car.x, car.z, b, r[2]) : Infinity);
+      if (p[2] !== undefined && b[2] !== undefined && !car.airborne) {
+        const dx = b[0] - p[0], dz = b[1] - p[1], l2 = dx * dx + dz * dz;
+        const t = l2 ? clamp(((car.x - p[0]) * dx + (car.z - p[1]) * dz) / l2, 0, 1) : 0;
+        if (Math.abs(car.y - (p[2] + (b[2] - p[2]) * t)) > 4.5) off = Infinity;
+      }
+      r[0] = [car.x, car.z];
     }
     if ((off > 30 && this.routeTimer <= 0) || !this.route) {
       this.routeTimer = 1.2;
@@ -155,8 +175,9 @@ export class Missions {
       const to = g.nearestNode(this.routeTarget.x, this.routeTarget.z, RC.LIVING, 400, true);
       const path = g.route(from, to);
       if (path) {
-        this.route = [[car.x, car.z], ...path.map((n) => [g.nx(n), g.nz(n)]), [this.routeTarget.x, this.routeTarget.z]];
+        this.route = [[car.x, car.z], ...path.map((n) => [g.nx(n), g.nz(n), this.g.map.nodeY[n]]), [this.routeTarget.x, this.routeTarget.z]];
       } else this.route = [[car.x, car.z], [this.routeTarget.x, this.routeTarget.z]];
+      this.routePrev = [car.x, car.z, car.y];
     }
   }
 
@@ -210,8 +231,11 @@ export class Missions {
     if (!l) return null;
     const g = this.g.graph;
     let n = l.node;
-    const atGrade = (k) => Math.abs(this.g.map.nodeY[k]) < 0.5;
-    if (n < 0 || !g.inSCC[n] || !atGrade(n)) n = g.nearestNode(l.x, l.z, RC.LIVING, 400, true, atGrade);
+    // An ordinary street at ground level: not in a tunnel or on a deck, and
+    // not a highway or ramp (Storrow Drive under the bridges) that the GPS
+    // could only reach by a long loop.
+    const ok = (k) => Math.abs(this.g.map.nodeY[k]) < 0.5 && g.nodeClass[k] > RC.TRUNK;
+    if (n < 0 || !g.inSCC[n] || !ok(n)) n = g.nearestNode(l.x, l.z, RC.LIVING, 400, true, ok);
     return { x: g.nx(n), z: g.nz(n), y: this.g.map.nodeY[n], node: n, name };
   }
 
@@ -220,14 +244,16 @@ export class Missions {
     if (this.medalTimes.has(race.id)) return this.medalTimes.get(race.id);
     const g = this.g.graph;
     const stops = race.stops.map((s) => this.stopPos(s)).filter(Boolean);
-    let len = 0;
+    let len = 0, ideal = 0;
     for (let i = 0; i + 1 < stops.length; i++) {
       const p = g.route(stops[i].node, stops[i + 1].node);
-      len += p ? g.pathLength(p) : Math.hypot(stops[i + 1].x - stops[i].x, stops[i + 1].z - stops[i].z) * 1.4;
+      const l = p ? g.pathLength(p) : Math.hypot(stops[i + 1].x - stops[i].x, stops[i + 1].z - stops[i].z) * 1.4;
+      len += l;
+      ideal += p && p.length > 1 ? idealTime(g, this.g.map.roads, p, i === 0) : l / 16;
     }
     const info = {
-      length: len, stops,
-      gold: len / MEDAL_SPEED.gold + 4, silver: len / MEDAL_SPEED.silver + 6, bronze: len / MEDAL_SPEED.bronze + 8,
+      length: len, stops, ideal,
+      gold: ideal * MEDAL_PACE.gold + 4, silver: ideal * MEDAL_PACE.silver + 6, bronze: ideal * MEDAL_PACE.bronze + 8,
     };
     this.medalTimes.set(race.id, info);
     return info;
@@ -506,6 +532,43 @@ export class Missions {
     }
     return o;
   }
+}
+
+// Fastest sensible time along a node path: speed is capped by road class and
+// by grip in each bend (radius from the node spacing, or the widest arc that
+// fits in the road), then limited by acceleration and braking between them.
+function idealTime(g, roads, path, standingStart) {
+  const n = path.length;
+  const s = new Float64Array(n), v = new Float64Array(n).fill(Infinity), w = new Float64Array(n).fill(99);
+  for (let i = 1; i < n; i++) s[i] = s[i - 1] + Math.hypot(g.nx(path[i]) - g.nx(path[i - 1]), g.nz(path[i]) - g.nz(path[i - 1]));
+  for (let i = 0; i + 1 < n; i++) {
+    let cap = IDEAL_SPEED[RC.SERVICE], width = 6;
+    for (const e of g.outEdges(path[i], false)) {
+      if (g.eTo[e] !== path[i + 1]) continue;
+      const r = roads[g.eRoad[e]];
+      cap = IDEAL_SPEED[r.cls]; width = r.width;
+      break;
+    }
+    v[i] = Math.min(v[i], cap); v[i + 1] = Math.min(v[i + 1], cap);
+    w[i] = Math.min(w[i], width); w[i + 1] = Math.min(w[i + 1], width);
+  }
+  for (let i = 1; i + 1 < n; i++) {
+    const a = s[i] - s[i - 1], b = s[i + 1] - s[i];
+    if (a < 0.5 || b < 0.5) continue;
+    const h0 = Math.atan2(g.nx(path[i]) - g.nx(path[i - 1]), g.nz(path[i]) - g.nz(path[i - 1]));
+    const h1 = Math.atan2(g.nx(path[i + 1]) - g.nx(path[i]), g.nz(path[i + 1]) - g.nz(path[i]));
+    const th = Math.abs(wrapAngle(h1 - h0));
+    if (th < 1e-3) continue;
+    const rTan = Math.min(a, b) / 2 / Math.tan(Math.min(th, 3.1) / 2);
+    const rFit = w[i] / 2 / (1 / Math.cos(Math.min(th, 3) / 2) - 1);
+    v[i] = Math.min(v[i], Math.sqrt(IDEAL.lat * Math.max(IDEAL.rMin, Math.min(rTan, rFit))));
+  }
+  if (standingStart) v[0] = 0;
+  for (let i = 0; i + 1 < n; i++) v[i + 1] = Math.min(v[i + 1], Math.sqrt(v[i] ** 2 + 2 * IDEAL.acc * (s[i + 1] - s[i])));
+  for (let i = n - 2; i >= 0; i--) v[i] = Math.min(v[i], Math.sqrt(v[i + 1] ** 2 + 2 * IDEAL.brake * (s[i + 1] - s[i])));
+  let t = 0;
+  for (let i = 0; i + 1 < n; i++) t += (s[i + 1] - s[i]) / Math.max(0.5, (v[i] + v[i + 1]) / 2);
+  return t;
 }
 
 function distToSeg(px, pz, a, b) {

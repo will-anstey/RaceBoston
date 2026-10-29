@@ -5,8 +5,11 @@ export const RC = { MOTORWAY: 0, TRUNK: 1, PRIMARY: 2, SECONDARY: 3, TERTIARY: 4
 
 export const AREA = {
   PARK: 1, GRASS: 2, PITCH: 3, GOLF: 4, CEMETERY: 5, WOOD: 6, PLAYGROUND: 7, TRACK: 8, SAND: 9,
-  WETLAND: 10, GARDEN: 11, RAILYARD: 12, DIRT: 13, PARKING: 20, PLAZA: 21, PIER: 22, FUEL: 23,
+  WETLAND: 10, GARDEN: 11, RAILYARD: 12, DIRT: 13, PARKING: 20, PLAZA: 21, PIER: 22, FUEL: 23, APRON: 24,
 };
+
+// Airport taxi-graph way kinds (tools/aero.mjs).
+export const AERO = { RUNWAY: 0, TAXIWAY: 1, TAXILANE: 2, LEADIN: 3, CONNECTOR: 4 };
 
 // Rail: which trains run on a way, and node / way flags (tools/build-map.mjs).
 export const RAIL_SVC = { RED: 1, ORANGE: 2, BLUE: 4, GREEN: 8, COMMUTER: 16, AMTRAK: 32, FREIGHT: 64 };
@@ -88,6 +91,7 @@ function decode(raw) {
     water: raw.water.map((p) => p.map(ring)),
     areas: raw.areas.map(([type, p]) => ({ type, rings: p.map(ring) })),
     ...decodeRail(raw),
+    aero: decodeAero(raw.aero),
     trees: Float32Array.from(raw.trees),
     places: raw.places.map(([name, x, z, rank]) => ({ name, x, z, rank })),
     landmarks: raw.landmarks.map(([name, kind, x, z, node]) => ({ name, kind, x, z, node })),
@@ -108,4 +112,17 @@ function decodeRail(raw) {
     return { kind: w.kind, bridge: !!(w.flags & RAIL_WAY.BRIDGE), pts, ys: raised ? ys : null };
   });
   return { railNodes, railY, railFlags, railWays, rail };
+}
+
+function decodeAero(a) {
+  if (!a) return null;
+  return {
+    nodes: Float32Array.from(a.nodes),
+    ways: a.ways.map(([kind, w10, nodes]) => ({ kind, width: w10 / 10, nodes: Int32Array.from(nodes) })),
+    runways: a.runways.map(([ref, w10, nodes, e0, e1]) => ({ ref, width: w10 / 10, nodes: Int32Array.from(nodes), ends: [e0, e1] })),
+    stands: a.stands.map(([ref, nodes]) => ({ ref, nodes: Int32Array.from(nodes) })),
+    holds: Int32Array.from(a.holds || []),
+    gates: a.gates || [],
+    fence: (a.fence || []).map((r) => Float32Array.from(r)),
+  };
 }

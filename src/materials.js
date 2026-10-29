@@ -253,6 +253,71 @@ export function makeRoadMaterial({ tunnel = false } = {}) {
   });
 }
 
+// Runway with FAA-style markings. aUV = (lateral m, m along from the chain
+// start), aRwy = (half width of the marked runway, runway length).
+export function makeRunwayMaterial() {
+  const m = new THREE.MeshStandardMaterial({ color: 0x35373b, roughness: 0.9, metalness: 0, flatShading: true });
+  return patch(m, 'rb-runway', {
+    constNormal: true,
+    vPars: 'attribute vec2 aUV; attribute vec2 aRwy; varying vec2 vRUV; varying vec2 vRwy;',
+    vMain: 'vRUV = aUV; vRwy = aRwy;',
+    fPars: 'varying vec2 vRUV; varying vec2 vRwy;',
+    fMain: /* glsl */ `
+      {
+        float u = vRUV.x, v = vRUV.y, hw = vRwy.x, L = vRwy.y;
+        float au = abs(u), d = min(v, L - v);
+        float fu = max(fwidth(u), 0.003), fv = max(fwidth(v), 0.003);
+        float detail = 1.0 - smoothstep(0.35, 1.4, max(fu, fv));
+        vec3 col = diffuseColor.rgb * (0.86 + rbNoise(vWPos.xz * 0.04) * 0.2 + (rbHash12(floor(vWPos.xz * 2.0)) - 0.5) * 0.06 * detail);
+        col = mix(col, col * 1.45 + 0.03, smoothstep(hw - 0.15, hw + 0.15, au));              // lighter shoulders
+        float rub = smoothstep(200.0, 330.0, d) * (1.0 - smoothstep(650.0, 1100.0, d)) * (1.0 - smoothstep(8.0, 15.0, au));
+        col *= 1.0 - 0.5 * rub * (0.55 + 0.45 * rbNoise(vec2(u * 0.6, v * 0.025)));           // tyre rubber
+        float paint = rbLine(au - (hw - 1.0), 0.45, fu);                                       // edge stripes
+        float inThr = step(6.0, d) * step(d, 51.0) * step(3.0, au) * step(au, hw - 3.0);
+        float keys = rbLine(fract((au - 3.0) / 3.6) - 0.25, 0.25, fu / 3.6);
+        paint = max(paint, inThr * mix(0.5, keys, detail));                                    // threshold piano keys
+        paint = max(paint, step(115.0, d) * rbLine(u, 0.45, fu) * step(fract(v / 60.0), 0.6)); // centreline dashes
+        paint = max(paint, step(305.0, d) * step(d, 350.0) * step(6.5, au) * step(au, 15.5));  // aiming point
+        float tdz = 0.0;
+        for (int k = 0; k < 5; k++) {
+          float c = k == 0 ? 150.0 : 300.0 + 150.0 * float(k);
+          tdz = max(tdz, step(c, d) * step(d, c + 22.0));
+        }
+        float bars = mix(0.5, rbLine(fract((au - 6.5) / 2.2) - 0.25, 0.25, fu / 2.2), detail) * step(6.5, au) * step(au, 12.5);
+        paint = max(paint, tdz * bars * step(d, 920.0) * (1.0 - step(300.0, d) * step(d, 360.0)));
+        paint *= 1.0 - smoothstep(hw - 0.1, hw + 0.2, au);
+        col = mix(col, vec3(0.86, 0.86, 0.84), paint * 0.93);
+        diffuseColor.rgb = col;
+        roughnessFactor = mix(roughnessFactor, 0.65, paint);
+      }
+    `,
+  });
+}
+
+// Taxiway: yellow centreline, double yellow edge lines (aTwy.y = 1).
+export function makeTaxiwayMaterial() {
+  const m = new THREE.MeshStandardMaterial({ color: 0x3d3e42, roughness: 0.9, metalness: 0, flatShading: true });
+  return patch(m, 'rb-taxiway', {
+    constNormal: true,
+    vPars: 'attribute vec2 aUV; attribute vec2 aTwy; varying vec2 vRUV; varying vec2 vTwy;',
+    vMain: 'vRUV = aUV; vTwy = aTwy;',
+    fPars: 'varying vec2 vRUV; varying vec2 vTwy;',
+    fMain: /* glsl */ `
+      {
+        float u = vRUV.x, hw = vTwy.x, au = abs(u);
+        float fu = max(fwidth(u), 0.003);
+        float fwp = length(fwidth(vWPos.xz));
+        vec3 col = diffuseColor.rgb * (0.88 + rbNoise(vWPos.xz * 0.05) * 0.18 + (rbHash12(floor(vWPos.xz * 2.0)) - 0.5) * 0.06 * (1.0 - smoothstep(0.3, 1.0, fwp)));
+        float paint = rbLine(u, 0.09, fu);
+        paint = max(paint, vTwy.y * max(rbLine(au - (hw - 0.55), 0.08, fu), rbLine(au - (hw - 0.9), 0.08, fu)));
+        paint *= 1.0 - smoothstep(0.15, 0.6, fu * 5.0);
+        col = mix(col, vec3(0.86, 0.62, 0.1), paint * 0.92);
+        diffuseColor.rgb = col;
+      }
+    `,
+  });
+}
+
 // Depth-tested variant of a flat-layer material for elevated / sunken roads.
 export function as3D(mat) {
   mat.depthWrite = true;

@@ -154,6 +154,13 @@ export class MapArt {
       ctx.stroke();
     };
     for (const p of map.piers) line(p.pts, p.width / mpp, COLORS.paved);
+    if (map.aero) {
+      const A = map.aero, P = (nodes) => Float32Array.from(Array.from(nodes).flatMap((n) => [A.nodes[2 * n], A.nodes[2 * n + 1]]));
+      for (const w of A.ways) if (w.kind === 2 || w.kind >= 3) line(P(w.nodes), (w.kind === 2 ? 52 : 60) / mpp, COLORS.paved);
+      for (const w of A.ways) if (w.kind === 1 || w.kind === 2) line(P(w.nodes), Math.max(1.5, w.width / mpp), '#4d5564');
+      for (const r of A.runways) line(P(r.nodes), (r.width + 15) / mpp, '#5a6272');
+      for (const r of A.runways) line(P(r.nodes), r.width / mpp, '#8a93a3');
+    }
     for (const p of map.paths) line(p.pts, Math.max(0.6, p.width / mpp), COLORS.path);
     for (const r of map.rail) line(r.pts, 1.2, COLORS.rail);
     ctx.fillStyle = COLORS.building;
@@ -209,6 +216,21 @@ function drawOverlays(ctx, o, pxPerM, rot) {
   };
   for (const c of o.cars || []) dot(c[0], c[1], 2.2, '#c7cfdd');
   for (const t of o.trains || []) dot(t[0], t[1], 3.2, '#' + t[2].toString(16).padStart(6, '0'), '#0b1220');
+  for (const p of o.planes || []) {
+    ctx.save();
+    ctx.translate(p[0], p[1]);
+    ctx.rotate(p[2]);
+    const k = (p[3] ? 1.25 : 0.9) / pxPerM;
+    ctx.scale(k, k);
+    ctx.beginPath();
+    ctx.moveTo(0, -7); ctx.lineTo(1.2, -2); ctx.lineTo(7, 1.5); ctx.lineTo(7, 3); ctx.lineTo(1.2, 1.5); ctx.lineTo(1, 5);
+    ctx.lineTo(3, 6.5); ctx.lineTo(3, 7.5); ctx.lineTo(0, 6.8); ctx.lineTo(-3, 7.5); ctx.lineTo(-3, 6.5); ctx.lineTo(-1, 5);
+    ctx.lineTo(-1.2, 1.5); ctx.lineTo(-7, 3); ctx.lineTo(-7, 1.5); ctx.lineTo(-1.2, -2); ctx.closePath();
+    ctx.fillStyle = p[3] ? '#bfe6ff' : '#f2f4f8';
+    ctx.strokeStyle = '#0b1220'; ctx.lineWidth = 1.2;
+    ctx.fill(); ctx.stroke();
+    ctx.restore();
+  }
   for (const m of o.markers || []) dot(m.x, m.z, m.r || 6, m.color || '#ffd447', m.stroke ?? '#0b1220', m.label);
 }
 

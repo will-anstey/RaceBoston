@@ -21,13 +21,15 @@ import { StreetSigns } from './signs.js';
 import { updateLandmarks } from './landmarks.js';
 import { Trains } from './trains.js';
 import { FlyCam } from './fly.js';
+import { Planes } from './planes.js';
+import { updateLightMaterial } from './airport.js';
 import { clamp, smoothstep, loadJSON, saveJSON, nextFrame } from './util.js';
 
 const STEP = 1 / 150;
 const isTouch = matchMedia('(pointer: coarse)').matches;
 const DEFAULT_SETTINGS = {
   quality: isTouch ? 'medium' : 'high', traffic: 26, tod: 'day', metric: false,
-  sound: true, arrow: true, labels: true, car: 'coupe',
+  sound: true, arrow: true, labels: true, car: 'coupe', trains: 2, planes: 2,
 };
 const QUALITY = {
   low: { pr: 1, shadow: 0, trees: 380, draw: 1400 },
@@ -108,7 +110,9 @@ class Game {
     this.traffic = new Traffic(this);
     this.traffic.setDensity(this.settings.traffic);
     this.trains = new Trains(this);
-    this.trains.setDensity(this.settings.traffic);
+    this.trains.setDensity(this.settings.trains);
+    this.planes = new Planes(this, world.airport);
+    this.planes.setDensity(this.settings.planes);
     this.fly = new FlyCam(this.camera, canvas, this.input);
     this.focusPt = { x: 0, y: 0, z: 0 };
     this.menu = new Menu(this);
@@ -166,7 +170,9 @@ class Game {
     this.settings[key] = value;
     saveJSON('rb.settings', this.settings);
     if (key === 'quality') this.applyQuality();
-    if (key === 'traffic') { this.traffic.setDensity(value); this.trains.setDensity(value); }
+    if (key === 'traffic') this.traffic.setDensity(value);
+    if (key === 'trains') this.trains.setDensity(value);
+    if (key === 'planes') this.planes.setDensity(value);
     if (key === 'tod') this.applyTimeOfDay();
     if (key === 'sound') this.audio.setMuted(!value);
   }
@@ -392,9 +398,11 @@ class Game {
     if (this.state === 'menu' || playing || flying) {
       this.traffic.update(dt, focus);
       this.trains.update(dt, focus);
+      this.planes.update(dt, focus);
     }
     if (playing) {
       this.trains.collidePlayer(this.car);
+      this.planes.collidePlayer(this.car);
       if (this.car.impact > this.frameImpact) this.frameImpact = this.car.impact;
       this.handleImpacts(dt);
       this.chase.lookBack = this.input.state.lookBack;
@@ -402,6 +410,8 @@ class Game {
     }
     this.updatePlayerModel();
     this._focusV = (this._focusV || new THREE.Vector3()).set(focus.x, focus.y, focus.z);
+    if (this.world.airport) updateLightMaterial(this.world.airport.lightMat, this.camera, this.renderer, this.scene.fog);
+    if (this.planes.lightMat) updateLightMaterial(this.planes.lightMat, this.camera, this.renderer, this.scene.fog);
     this.sky.update(this.camera, this._focusV);
     this.updateHeadlight();
     this.updateVisibility(dt);
@@ -410,11 +420,12 @@ class Game {
     if (this.state === 'play' || this.state === 'paused' || this.state === 'results' || this.state === 'fly') this.updateHUD(dt);
     if (this.bigmap.open) {
       const me = this.state === 'fly' ? { x: this.fly.x, z: this.fly.z, heading: this.fly.yaw } : this.car;
-      this.bigmap.draw(me, { ...this.missions.overlays(), cars: this.traffic.positions(), trains: this.trains.positions() });
+      this.bigmap.draw(me, { ...this.missions.overlays(), cars: this.traffic.positions(), trains: this.trains.positions(), planes: this.planes.positions() });
     }
     this.audio.update(this.car, this.effectiveInput || this.input.state, playing && !this.sinking);
     const ear = this.state === 'fly' ? this.fly : this.car;
     this.audio.setRumble(this.state === 'menu' ? 0 : this.trains.rumble(ear.x, ear.z) * (this.state === 'fly' ? Math.max(0, 1 - Math.max(0, this.fly.y) / 120) : 1));
+    this.audio.setJet(this.state === 'menu' ? 0 : this.planes.noise(ear.x, ear.y ?? 0, ear.z));
     if (flying) this.audio.setWind(this.fly.speed);
     this.renderer.render(this.scene, this.camera);
   }
@@ -601,7 +612,7 @@ class Game {
         extra: 'Click and move the mouse to look · WASD fly · Space/Q up and down · Shift fast · wheel speed<br>Enter drops the car here · G returns to the car · M map (click to jump)',
       });
       if (this.frame % 2 === 0 || this.fps > 50) {
-        this.minimap.draw(f.x, f.z, f.yaw, Math.min(50, f.speed * 0.4), { ...this.missions.overlays(), cars: this.traffic.positions(), trains: this.trains.positions(), markers: [{ x: c.x, z: c.z, r: 6, color: '#ff4d5a', label: '' }] });
+        this.minimap.draw(f.x, f.z, f.yaw, Math.min(50, f.speed * 0.4), { ...this.missions.overlays(), cars: this.traffic.positions(), trains: this.trains.positions(), planes: this.planes.positions(), markers: [{ x: c.x, z: c.z, r: 6, color: '#ff4d5a', label: '' }] });
       }
       return;
     }
@@ -614,7 +625,7 @@ class Game {
       this.updateLocation(0.25);
     }
     if (this.frame % 2 === 0 || this.fps > 50) {
-      this.minimap.draw(c.x, c.z, this.chase.mode === 3 ? this.chase.heading : c.heading, c.speed, { ...this.missions.overlays(), cars: this.traffic.positions(), trains: this.trains.positions() });
+      this.minimap.draw(c.x, c.z, this.chase.mode === 3 ? this.chase.heading : c.heading, c.speed, { ...this.missions.overlays(), cars: this.traffic.positions(), trains: this.trains.positions(), planes: this.planes.positions() });
     }
   }
 
@@ -662,6 +673,7 @@ class Game {
       route: this.missions.route ? this.missions.route.length : 0,
       fly: this.state === 'fly' ? { x: this.fly.x, y: this.fly.y, z: this.fly.z, yaw: this.fly.yaw, speed: this.fly.speed } : null,
       trains: this.trains.trains.map((t) => ({ svc: t.svc.id, v: +t.v.toFixed(1), dwell: t.dwell > 0, cars: t.cars.length })),
+      planes: this.planes.stats(),
     };
   }
 }

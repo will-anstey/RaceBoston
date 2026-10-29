@@ -13,6 +13,8 @@ export const CARS = [
 const SETTINGS = [
   { key: 'quality', label: 'Graphics', values: ['low', 'medium', 'high', 'ultra'], names: ['Low', 'Medium', 'High', 'Ultra'] },
   { key: 'traffic', label: 'Traffic', values: [0, 12, 26, 40], names: ['Off', 'Light', 'Normal', 'Heavy'] },
+  { key: 'trains', label: 'Trains', values: [0, 1, 2, 3, 4], names: ['Off', 'Few', 'Normal', 'Many', 'Max'] },
+  { key: 'planes', label: 'Planes', values: [0, 1, 2, 3, 4], names: ['Off', 'Few', 'Normal', 'Many', 'Max (very busy)'] },
   { key: 'tod', label: 'Time of day', values: ['day', 'sunset', 'night'], names: ['Day', 'Sunset', 'Night'] },
   { key: 'metric', label: 'Units', values: [false, true], names: ['Imperial (mph)', 'Metric (km/h)'] },
   { key: 'sound', label: 'Sound', values: [true, false], names: ['On', 'Off'] },

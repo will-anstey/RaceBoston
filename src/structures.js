@@ -123,6 +123,54 @@ export function buildStructures(map, graph, mats, add, { isGroundRoad }) {
     }
     return false;
   };
+  // Pieces of a cut or tunnel wall along A->B (own road ri at ya..yb, wall
+  // top `top`) that keep clear of other roads' traffic. Where another road at
+  // about the same level runs through (merges, gores, ramp mouths at street
+  // level) the wall is dropped; where one passes over or under it, the wall
+  // stops short of that road's cars but still fences its own. OSM layers
+  // stack Big Dig ramps only a few meters apart, so a deeper tunnel's walls
+  // would otherwise stand across the ramp above it, and a cut beside a
+  // slightly lower tunnel would lose its wall and parapet altogether.
+  // Returns [f0, f1, bottom, top] pieces.
+  const seen = new Int32Array(lanes.length);
+  let seenId = 0;
+  const wallPieces = (A, B, ya, yb, top, ri) => {
+    const yMin = Math.min(ya, yb), near = [];
+    seenId++;
+    for (let gx = Math.floor(Math.min(A[0], B[0]) / C) - 1; gx <= Math.floor(Math.max(A[0], B[0]) / C) + 1; gx++)
+      for (let gz = Math.floor(Math.min(A[2], B[2]) / C) - 1; gz <= Math.floor(Math.max(A[2], B[2]) / C) + 1; gz++)
+        for (const k of laneGrid.get(gx * 100003 + gz) || []) {
+          if (seen[k] === seenId) continue;
+          seen[k] = seenId;
+          const d = lanes[k];
+          if (d[7] !== ri && Math.max(d[4], d[5]) > yMin - 2.2 && Math.min(d[4], d[5]) < top + 0.1) near.push(d);
+        }
+    if (!near.length) return [[0, 1, -Infinity, top]];
+    const n = Math.max(1, Math.ceil(Math.hypot(B[0] - A[0], B[2] - A[2]) / 3));
+    const pieces = [];
+    for (let q = 0; q < n; q++) {
+      const f0 = q / n, f1 = (q + 1) / n;
+      let lo = -Infinity, hi = top, drop = false;
+      for (const f of [f0, (f0 + f1) / 2, f1]) {
+        const x = A[0] + (B[0] - A[0]) * f, z = A[2] + (B[2] - A[2]) * f, y = ya + (yb - ya) * f;
+        for (const d of near) {
+          const dx = d[2] - d[0], dz = d[3] - d[1], l2 = dx * dx + dz * dz || 1;
+          const u = Math.max(0, Math.min(1, ((x - d[0]) * dx + (z - d[1]) * dz) / l2));
+          if (Math.hypot(x - d[0] - dx * u, z - d[1] - dz * u) > d[6] + 0.8) continue;
+          const yo = d[4] + (d[5] - d[4]) * u, dy = yo - y;
+          const street = Math.abs(d[4]) < 0.05 && Math.abs(d[5]) < 0.05;
+          if (Math.abs(dy) < (street ? 2.2 : 0.6)) drop = true;
+          else if (street) continue;
+          else if (dy > 0) hi = Math.min(hi, yo - 0.1);
+          else lo = Math.max(lo, yo + 1.6);
+        }
+      }
+      if (drop || hi - Math.max(lo, yMin) < 0.3) lo = hi = null;
+      const last = pieces[pieces.length - 1];
+      if (last && last[2] === lo && last[3] === hi) last[1] = f1; else pieces.push([f0, f1, lo, hi]);
+    }
+    return pieces.filter((p) => p[3] !== null);
+  };
   const deckGrid = new Map();
   decks.forEach((d, k) => {
     for (let gx = Math.floor(Math.min(d[0], d[2]) / C); gx <= Math.floor(Math.max(d[0], d[2]) / C); gx++)
@@ -202,14 +250,19 @@ export function buildStructures(map, graph, mats, add, { isGroundRoad }) {
         for (const sd of [-1, 1]) {
           if ((sd < 0 ? trimL : trimR)[i]) continue;
           const off = (edge + 0.3) * sd;
-          if (blocked(P(i, off, ya), P(i + 1, off, yb), ya, yb, ri)) continue;
+          const A = P(i, off, ya), B = P(i + 1, off, yb);
           const mx = (pts[2 * i] + pts[2 * i + 2]) / 2 + ((ox[i] + ox[i + 1]) / 2) * off;
           const mz = (pts[2 * i + 1] + pts[2 * i + 3]) / 2 + ((oz[i] + oz[i + 1]) / 2) * off;
           const top = underDeck(mx, mz) ? 0 : PARAPET;
-          walls.quad(P(i, off, ya - 0.3), P(i + 1, off, yb - 0.3), P(i + 1, off, top), P(i, off, top));
-          if (top > 0) walls.quad(P(i, off - 0.25 * sd, top), P(i + 1, off - 0.25 * sd, top), P(i + 1, off + 0.25 * sd, top), P(i, off + 0.25 * sd, top));
-          const a = P(i, off, 0), b = P(i + 1, off, 0);
-          out.walls.push([a[0], a[2], b[0], b[2], Math.min(ya, yb) - 0.5, top + (top > 0 ? 0 : -0.05), 6]);
+          const L0 = P(i, off - 0.25 * sd, top), L1 = P(i + 1, off - 0.25 * sd, top);
+          const R0 = P(i, off + 0.25 * sd, top), R1 = P(i + 1, off + 0.25 * sd, top);
+          for (const [f0, f1, lo, t] of wallPieces(A, B, ya, yb, top, ri)) {
+            const y0 = ya + (yb - ya) * f0, y1 = ya + (yb - ya) * f1;
+            const a = lerpP(A, B, f0), b = lerpP(A, B, f1);
+            walls.quad([a[0], Math.max(y0 - 0.3, lo), a[2]], [b[0], Math.max(y1 - 0.3, lo), b[2]], [b[0], t, b[2]], [a[0], t, a[2]]);
+            if (t === top && top > 0) walls.quad(lerpP(L0, L1, f0), lerpP(L0, L1, f1), lerpP(R0, R1, f1), lerpP(R0, R1, f0));
+            out.walls.push([a[0], a[2], b[0], b[2], Math.max(Math.min(y0, y1) - 0.5, lo), t + (t > 0 ? 0 : -0.05), 6]);
+          }
         }
         const w = edge + 0.8;
         stencil.quad(P(i, -w, 0.01), P(i, w, 0.01), P(i + 1, w, 0.01), P(i + 1, -w, 0.01));
@@ -221,12 +274,20 @@ export function buildStructures(map, graph, mats, add, { isGroundRoad }) {
         for (const sd of [-1, 1]) {
           if ((sd < 0 ? trimL : trimR)[i]) continue;
           const off = wOff * sd;
-          if (blocked(P(i, off, ya), P(i + 1, off, yb), ya, yb, ri)) continue;
+          const A = P(i, off, ya), B = P(i + 1, off, yb);
           const inx = -ox[i] * sd, inz = -oz[i] * sd;
-          tunnel.quadFacing(P(i, off, ya - 0.3), P(i + 1, off, yb - 0.3), P(i + 1, off, cb), P(i, off, ca), inx, 0, inz);
-          uv.p2(s[i], -0.3); uv.p2(s[i + 1], -0.3); uv.p2(s[i + 1], cb - yb); uv.p2(s[i], ca - ya);
-          const a = P(i, off, 0), b = P(i + 1, off, 0);
-          out.walls.push([a[0], a[2], b[0], b[2], Math.min(ya, yb) - 0.5, Math.max(ca, cb), 7]);
+          const top = Math.max(ca, cb);
+          for (const [f0, f1, lo, t] of wallPieces(A, B, ya, yb, top, ri)) {
+            const y0 = ya + (yb - ya) * f0, y1 = ya + (yb - ya) * f1;
+            const c0 = Math.min(ca + (cb - ca) * f0, t), c1 = Math.min(ca + (cb - ca) * f1, t);
+            const b0 = Math.max(y0 - 0.3, lo), b1 = Math.max(y1 - 0.3, lo);
+            if (Math.min(c0 - b0, c1 - b1) < 0.3) continue;
+            const a = lerpP(A, B, f0), b = lerpP(A, B, f1);
+            tunnel.quadFacing([a[0], b0, a[2]], [b[0], b1, b[2]], [b[0], c1, b[2]], [a[0], c0, a[2]], inx, 0, inz);
+            const s0 = s[i] + (s[i + 1] - s[i]) * f0, s1 = s[i] + (s[i + 1] - s[i]) * f1;
+            uv.p2(s0, b0 - y0); uv.p2(s1, b1 - y1); uv.p2(s1, c1 - y1); uv.p2(s0, c0 - y0);
+            out.walls.push([a[0], a[2], b[0], b[2], Math.max(Math.min(y0, y1) - 0.5, lo), Math.max(c0, c1), 7]);
+          }
         }
         const cw = wOff + 0.9;
         tunnel.quadFacing(P(i, -cw, ca), P(i + 1, -cw, cb), P(i + 1, cw, cb), P(i, cw, ca), 0, -1, 0);
@@ -238,11 +299,17 @@ export function buildStructures(map, graph, mats, add, { isGroundRoad }) {
           if (!opensHere) continue;
           const y = ys[k], cy = Math.min(y + CEIL, -0.06);
           const pw = cw + 1.5;
-          const a = P(k, -pw, cy), b = P(k, pw, cy), b2 = P(k, pw, 0.9), a2 = P(k, -pw, 0.9);
-          walls.quad(a, b, b2, a2);
+          const a = P(k, -pw, 0), b = P(k, pw, 0);
           // A little set back so it has thickness.
           const tx = (pts[2 * (i + 1)] - pts[2 * i]) / (segLen || 1) * 0.8 * dir, tz = (pts[2 * (i + 1) + 1] - pts[2 * i + 1]) / (segLen || 1) * 0.8 * dir;
-          walls.quad([a2[0], 0.9, a2[2]], [b2[0], 0.9, b2[2]], [b2[0] - tx, 0.9, b2[2] - tz], [a2[0] - tx, 0.9, a2[2] - tz]);
+          // Solid too, so cars on the ground above can't drive off into the
+          // cut, except where a street crosses over the portal.
+          for (const [f0, f1, lo] of wallPieces(a, b, 0, 0, 0.9, ri)) {
+            const p = lerpP(a, b, f0), q = lerpP(a, b, f1), bot = Math.max(cy, lo);
+            walls.quad([p[0], bot, p[2]], [q[0], bot, q[2]], [q[0], 0.9, q[2]], [p[0], 0.9, p[2]]);
+            walls.quad([p[0], 0.9, p[2]], [q[0], 0.9, q[2]], [q[0] - tx, 0.9, q[2] - tz], [p[0] - tx, 0.9, p[2] - tz]);
+            out.walls.push([p[0], p[2], q[0], q[2], bot, 0.9, 6]);
+          }
         }
       }
     }
@@ -278,6 +345,8 @@ export function buildStructures(map, graph, mats, add, { isGroundRoad }) {
   add(mm);
   return out;
 }
+
+const lerpP = (A, B, f) => [A[0] + (B[0] - A[0]) * f, A[1] + (B[1] - A[1]) * f, A[2] + (B[2] - A[2]) * f];
 
 function addRailing(b, A, B) {
   // Curb, top rail and posts along A->B (points at deck height).

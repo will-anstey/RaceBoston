@@ -186,6 +186,84 @@ try {
     return { n, bad };
   });
   check('all race legs routable (legal one-way routes)', legCheck.bad.length === 0, `${legCheck.n} legs${legCheck.bad.length ? ' bad: ' + legCheck.bad.join(', ') : ''}`);
+  // The GPS may cut the wrong way down a one-way street, never up a ramp or a
+  // highway, and checkpoints sit on ordinary streets.
+  const gpsCheck = await page.evaluate(async () => {
+    const mod = await import('/src/missions.js');
+    const g = RB.game, gr = g.graph, roads = g.map.roads, bad = [];
+    for (const race of mod.RACES) {
+      const stops = race.stops.map((s) => g.missions.stopPos(s));
+      stops.forEach((s, i) => { if (s && gr.nodeClass[s.node] <= 1) bad.push(`${race.id}: ${race.stops[i]} on a highway`); });
+      for (let i = 0; i + 1 < stops.length; i++) {
+        if (!stops[i] || !stops[i + 1]) continue;
+        const p = gr.route(stops[i].node, stops[i + 1].node) || [];
+        for (let k = 0; k + 1 < p.length; k++) {
+          for (const e of gr.outEdges(p[k], false)) {
+            if (gr.eTo[e] !== p[k + 1] || gr.eLegal[e]) continue;
+            const r = roads[gr.eRoad[e]];
+            if (r.link || r.cls <= 1) bad.push(`${race.id}: wrong way on ${r.name || 'a ramp'}`);
+          }
+        }
+      }
+    }
+    return [...new Set(bad)];
+  });
+  check('GPS keeps races off highways the wrong way', gpsCheck.length === 0, gpsCheck.slice(0, 4).join(', '));
+  // Bridge pillars must stand clear of every road under the deck.
+  const pillarCheck = await page.evaluate(() => {
+    const g = RB.game, map = g.map, sg = g.graph.segGrid, s = sg.segs, Y = map.nodeY;
+    let n = 0;
+    for (const [x, z, r] of g.world.structures.pillars) {
+      const m = sg.query(x, z, 30);
+      for (let k = 0; k < m; k++) {
+        const i = sg.result[k], road = map.roads[sg.meta[i]], seg = sg.meta2[i];
+        const dx = s[4 * i + 2] - s[4 * i], dz = s[4 * i + 3] - s[4 * i + 1], l2 = dx * dx + dz * dz || 1e-9;
+        const t = Math.max(0, Math.min(1, ((x - s[4 * i]) * dx + (z - s[4 * i + 1]) * dz) / l2));
+        const y = Y[road.nodes[seg]] + (Y[road.nodes[seg + 1]] - Y[road.nodes[seg]]) * t;
+        if (y < 2 && Math.hypot(x - s[4 * i] - dx * t, z - s[4 * i + 1] - dz * t) < road.width / 2 + r) { n++; break; }
+      }
+    }
+    return { n, total: g.world.structures.pillars.length };
+  });
+  check('no bridge pillars in road lanes', pillarCheck.n === 0, `${pillarCheck.n} of ${pillarCheck.total} pillars stand in a road`);
+  // GPS progress: step a car 1.5 m either side of the route from the Storrow
+  // exit, round the Beacon Street hairpin and back up Mugar Way (just beyond
+  // the ramp's wall). The next route node must stay just ahead of the car:
+  // not stalled behind it, not skipped ahead to the return leg.
+  const gpsTrack = await page.evaluate(() => {
+    const g = RB.game, m = g.missions, c = g.car;
+    g.placeCar(-684, -42, 72 * Math.PI / 180, -1.8);
+    const st = m.stopPos('Hatch Shell');
+    m.setRouteTarget(st.x, st.z);
+    const line = m.route.slice(1, -1).map((p) => p.slice());
+    const S = [0];
+    for (let i = 1; i < line.length; i++) S.push(S[i - 1] + Math.hypot(line[i][0] - line[i - 1][0], line[i][1] - line[i - 1][1]));
+    const sOf = (p) => { const k = line.findIndex((q) => q[0] === p[0] && q[1] === p[1]); return k < 0 ? null : S[k]; };
+    let ahead = 0, behind = 0, n = 0;
+    for (const side of [1.5, -1.5]) {
+      c.x = line[0][0]; c.z = line[0][1]; c.y = line[0][2];
+      m.setRouteTarget(st.x, st.z);
+      for (let i = 0; i + 1 < line.length && S[i] < 420; i++) {
+        const a = line[i], b = line[i + 1], L = S[i + 1] - S[i];
+        if (L < 0.01) continue;
+        const ux = (b[0] - a[0]) / L, uz = (b[1] - a[1]) / L;
+        for (let d = 0; d < L; d += 1.5) {
+          c.x = a[0] + ux * d - uz * side; c.z = a[1] + uz * d + ux * side; c.y = a[2] + (b[2] - a[2]) * d / L;
+          c.heading = Math.atan2(ux, -uz);
+          m._updateRoute(0.02);
+          const s = sOf(m.route[1]);
+          if (s === null) continue;
+          n++;
+          ahead = Math.max(ahead, s - (S[i] + d));
+          behind = Math.max(behind, S[i] + d - s);
+        }
+      }
+    }
+    m.setRouteTarget(null);
+    return { n, ahead, behind };
+  });
+  check('GPS keeps pace through a hairpin', gpsTrack.n > 200 && gpsTrack.ahead < 30 && gpsTrack.behind < 3,
+    `next node at most ${gpsTrack.ahead.toFixed(1)} m ahead, ${gpsTrack.behind.toFixed(1)} m behind (${gpsTrack.n} steps)`);
 
   // ---- sports car: 200 mph top speed, unchanged launch (physics on a flat stub world)
   const perf = await page.evaluate(async () => {
@@ -337,7 +415,8 @@ try {
   const block = await page.evaluate(async () => {
     const g = RB.game, T = g.trains;
     // Park the car on the track ahead of a moving surface train: it must be pushed off, not overlap.
-    const t = T.trains.find((q) => T._sample(q, q.head, {}).y > -1 && q.v > 3);
+    // An at-grade train (one on a viaduct would just pass over the car).
+    const t = T.trains.find((q) => Math.abs(T._sample(q, q.head, {}).y) < 0.3 && Math.abs(T._sample(q, q.head - q.length, {}).y) < 0.3 && q.v > 3);
     if (!t) return null;
     const p = T._sample(t, t.head + 2, {});
     g.placeCar(p.x, p.z, 0, p.y);
@@ -353,6 +432,24 @@ try {
   });
   if (block) check('trains are solid', block.gap > 0.4, `car-to-${block.svc} clearance ${block.gap.toFixed(2)} m`);
   else check('trains are solid', false, 'no surface train found');
+
+  // ---- Logan: parked aircraft, arrivals landing, departures taking off (Max density)
+  await page.evaluate(() => { RB.game.setSetting('planes', 4); });
+  const life = await page.evaluate(async () => {
+    const P = RB.game.planes, seen = new Set(), t0 = performance.now();
+    while (performance.now() - t0 < 300000) {
+      for (const p of P.planes) seen.add(p.state);
+      if (seen.has('rollout') && (seen.has('takeoff') || seen.has('climb'))) break;
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    return { seen: [...seen], secs: Math.round((performance.now() - t0) / 1000), stats: P.stats(), stands: P.stands.length };
+  });
+  check('Logan has parked planes at stands', (life.stats.parked || 0) > life.stands * 0.5, `${life.stats.parked} parked at ${life.stands} stands`);
+  check('planes land and take off', life.seen.includes('rollout') && (life.seen.includes('takeoff') || life.seen.includes('climb')), `states seen in ${life.secs}s: ${life.seen.join(', ')}`);
+  await page.evaluate(() => { RB.game.setSetting('planes', 0); });
+  s = await st();
+  check('planes setting Off clears the sky', s.planes.total === 0, `${s.planes.total} planes`);
+  await page.evaluate(() => { RB.game.setSetting('planes', 2); });
 
   // ---- race: teleport through checkpoints
   await page.evaluate(() => RB.game.begin('race', 'backbay'));
@@ -411,13 +508,13 @@ try {
   const sweep = await page.evaluate(async () => {
     const g = RB.game, frames = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
     const tried = [];
-    for (const [k, vals] of [['quality', ['low', 'medium', 'ultra', 'high']], ['traffic', [0, 40, 26]], ['metric', [true, false]], ['labels', [false, true]], ['arrow', [false, true]]]) {
+    for (const [k, vals] of [['quality', ['low', 'medium', 'ultra', 'high']], ['traffic', [0, 40, 26]], ['trains', [0, 1, 3, 4, 2]], ['planes', [0, 1, 3, 4, 2]], ['metric', [true, false]], ['labels', [false, true]], ['arrow', [false, true]]]) {
       for (const v of vals) { g.setSetting(k, v); await frames(); tried.push(`${k}=${v}`); }
     }
     for (const c of ['taxi', 'suv', 'coupe']) { g.selectCar(c); await frames(); tried.push('car=' + c); }
     return tried.length;
   });
-  check('settings sweep', sweep === 16, `${sweep} combinations rendered`);
+  check('settings sweep', sweep === 26, `${sweep} combinations rendered`);
 
   // ---- night + perf
   await page.evaluate(() => RB.game.setSetting('tod', 'night'));

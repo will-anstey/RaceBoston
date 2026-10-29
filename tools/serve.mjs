@@ -3,7 +3,7 @@
 //   node tools/serve.mjs [port]
 //
 // Any static server works (e.g. `python3 -m http.server 8080`); this one just
-// compresses the 8 MB map file so it loads faster.
+// compresses the 11 MB map file so it loads faster.
 
 import http from 'node:http';
 import fs from 'node:fs';

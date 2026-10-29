@@ -1,13 +1,15 @@
 # Race Boston
 
 An open-world driving game set in Boston, MA, playable in the browser. The city comes from
-[OpenStreetMap](https://www.openstreetmap.org) data. It includes 35,000 buildings with their real heights,
-10,700 streets with real names, lanes and one-way rules, the Charles River, the harbor and 18,000 trees.
+[OpenStreetMap](https://www.openstreetmap.org) data. It includes 40,000 buildings with their real heights,
+11,600 streets with real names, lanes and one-way rules, the Charles River, the harbor, East Boston and
+Logan Airport, and 22,000 trees.
 
 The roads are 3D: drive over the Zakim and the Harvard Bridge, down the Mass Pike trench, through the
 Big Dig tunnels under downtown, and under the harbor through the Sumner and Callahan tunnels. Trains run
 wherever you can see track: the Red Line over the Longfellow, the Green Line down Huntington and Comm Ave,
-and commuter rail and Amtrak into North and South Station. You can also leave the car and fly around.
+and commuter rail and Amtrak into North and South Station. Planes land on 4R over Castle Island, taxi to
+the gates, and take off from 4L. You can also leave the car and fly around.
 
 ![Driving down Commonwealth Avenue in Back Bay](docs/screenshot-drive.jpg)
 
@@ -16,7 +18,8 @@ and commuter rail and Amtrak into North and South Station. You can also leave th
 | ![Harvard Bridge toward the Back Bay skyline](docs/screenshot-bridge.jpg) | ![The Zakim Bridge at sunset](docs/screenshot-zakim.jpg) |
 | ![Boylston Street at night](docs/screenshot-night.jpg) | ![Inside the Mass Pike tunnel under Back Bay](docs/screenshot-tunnel.jpg) |
 | ![Fenway Park and the Green Monster](docs/screenshot-fenway.jpg) | ![The State House's gold dome](docs/screenshot-statehouse.jpg) |
-| ![A Red Line train crossing the Longfellow Bridge](docs/screenshot-redline.jpg) | ![Map with a GPS route to Fenway Park](docs/screenshot-map.jpg) |
+| ![A Red Line train crossing the Longfellow Bridge](docs/screenshot-redline.jpg) | ![A jet on short final to runway 4R at Logan](docs/screenshot-logan.jpg) |
+| ![Map with a GPS route to Fenway Park](docs/screenshot-map.jpg) | |
 
 ## Play
 
@@ -30,7 +33,7 @@ cd RaceBoston
 
 Then open <http://localhost:8080> in Chrome, Edge, Firefox or Safari and pick a mode.
 
-`npm start` uses a small dependency-free server (`tools/serve.mjs`) that gzips the 8 MB map
+`npm start` uses a small dependency-free server (`tools/serve.mjs`) that gzips the 11 MB map
 file. It's handy if you host the game on a network, but it isn't required.
 
 ## Modes
@@ -40,11 +43,13 @@ file. It's handy if you host the game on a network, but it isn't required.
 - **Fly Around** – a ghost camera that goes anywhere, through buildings and underground. Press **G** to
   start or stop flying, and **Enter** to drop the car on the road below you. On the map (**M**), click
   a spot to jump there.
-- **Free Roam** – drive anywhere and discover 42 landmarks, including Fenway Park, the State House, the
-  USS Constitution, MIT and Northeastern. Press **M** and click the map to set a GPS waypoint.
-- **Races** – 7 checkpoint races between real landmarks, such as the Freedom Trail Dash, Back Bay Sprint,
-  Charles River Loop and The Grand Tour. Gold, silver and bronze times are derived from each route's
-  length, and your best times are saved.
+- **Free Roam** – drive anywhere and discover 46 landmarks, including Fenway Park, the State House, the
+  USS Constitution, MIT, Northeastern and Logan Airport. Press **M** and click the map to set a GPS
+  waypoint.
+- **Races** – 8 checkpoint races between real landmarks, such as the Freedom Trail Dash, Back Bay Sprint,
+  Charles River Loop and The Grand Tour. The Logan Express runs from South Station to the terminals through
+  the Ted Williams Tunnel, then back to the North End under the harbor. Gold, silver and bronze times come
+  from an ideal lap of each route (road types, bends, braking), and your best times are saved.
 - **Taxi Shift** – pick up passengers, stop in the zone, and drop them off before the shift clock runs out.
   Fast, clean rides earn tips. Passengers have opinions about the Pike.
 
@@ -68,6 +73,9 @@ file. It's handy if you host the game on a network, but it isn't required.
 | F | Fullscreen |
 | Esc / P | Pause |
 
+In **Settings** you can set the amount of traffic, trains (Off to Max: about 22 trains around you) and
+planes (Off to Max: a landing and a takeoff every minute, six overflights and a full terminal).
+
 Gamepads work too: RT/LT for gas and brake, A handbrake, B boost, X reset, Y camera, Start pause.
 On touch devices, on-screen buttons appear automatically.
 
@@ -87,6 +95,17 @@ painted on canvases in the browser:
   tiled walls, ceilings and lights, and open cuts get retaining walls. A stencil mask hides anything
   underground except where the ground is actually open. The car has real vertical physics: it follows
   ramps, catches air off crests and can fall off an edge, so stay on the deck.
+- **Logan Airport** – all six runways have FAA-style markings and painted numbers, plus taxiways with yellow
+  lines, hold-short bars and 166 real stands. At night there are edge, centreline, threshold and taxiway
+  lights, and a sequenced strobe on the approach. Airliners (narrowbody, widebody and regional, in
+  fictional liveries) work on a loop:
+  - Arrivals join a 3° glidepath to 4R, flare, roll out, take a high-speed exit and taxi to a free stand,
+    holding short of 4L when departures are rolling.
+  - Departures push back, taxi, hold short, line up and take off from 4L, then turn toward their
+    destinations over the city.
+  - Arrivals are spaced about a minute apart, and go around if the runway is still occupied.
+  - Overflights cross at altitude.
+  - Planes on the ground stop for your car and are solid. You can hear the jets.
 - **Trains** – OSM route relations tell which track each line uses. Red, Orange and Blue Line cars,
   two-car Green Line trolleys with pantographs, MBTA bilevel commuter trains, Amtrak and Grand Junction
   freight all follow the real track. They stop at stations, reverse at terminals, and slip into tunnel
@@ -106,7 +125,8 @@ painted on canvases in the browser:
   Bridges over water get railings. Drive into the river and you'll splash, then get put back on the road.
 - **Traffic** – AI cars drive the real road graph, respect one-way streets, stop at the 1,400+ mapped
   traffic signals, and get knocked around if you hit them.
-- **GPS** – A* routing over the road network, shown on a rotating minimap and a 3D arrow.
+- **GPS** – A* routing over the road network, shown on a rotating minimap and a 3D arrow. It will cut the
+  wrong way down a one-way street, but never up a highway or a ramp.
 
 ## Project layout
 
@@ -119,6 +139,8 @@ src/                  game code (ES modules, no build step)
   landmarks.js        Fenway Park, the State House dome and other dressed landmarks
   signs.js            street name signs
   trains.js           trains on the surface rail network
+  airport.js          Logan's runways, taxiways, markings and airfield lights
+  planes.js           aircraft: arrivals, taxiing, departures, overflights
   fly.js              ghost camera for fly mode
   materials.js        shader patches: windows, lane markings, curbs, water waves
   vehicle.js          arcade car physics; collision.js: walls/trees/surfaces
@@ -146,14 +168,15 @@ npm run build-map           # writes data/boston.json and tools/.cache/preview.p
 ```sh
 npm test                          # boots the game in headless Chrome and checks it
 node tools/test-3d-roads.mjs      # autopilot drives the Pike, Big Dig, Zakim, bridges and harbor tunnels
-node tools/test-autodrive.mjs     # an autopilot drives every race end-to-end
+node tools/test-autodrive.mjs     # an autopilot drives every race end-to-end, with checkpoint splits
 ```
 
 `npm test` checks loading, driving, braking and reversing, building collisions, splashing into the
 Charles and respawning, traffic, the coupe's 200 mph top speed and 0-60 time, driving the Harvard Bridge
 deck and the Pike tunnel, signs and landmarks, fly mode (flying through buildings and dropping the car),
-trains running and being solid, finishing a race, a taxi fare, GPS routing, every setting,
-night mode and frame rate.
+trains running and being solid, planes parked at Logan, landing and taking off, the plane settings,
+finishing a race, a taxi fare, GPS routing (checkpoints on ordinary streets, never the wrong way up a
+ramp), bridge pillars clear of the roads below, every setting, night mode and frame rate.
 It saves screenshots to `tools/screenshots/`. The tests need Google Chrome installed; set `CHROME_PATH`
 if it isn't in the default location.
 

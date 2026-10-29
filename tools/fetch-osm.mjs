@@ -91,6 +91,13 @@ const QUERIES = {
       node["public_transport"="stop_position"](${P});
     );
     out body;`,
+  // Logan Airport: runways, taxiways, aprons, gate lead-in lines and stands.
+  aero: `
+    (
+      way["aeroway"~"^(runway|taxiway|taxilane|apron|parking_position|stopway|aerodrome)$"](${W});
+      node["aeroway"~"^(gate|parking_position|holding_position|windsock)$"](${W});
+    );
+    out geom;`,
   // Stadium outline, used to recognise Fenway Park's building parts.
   fenway: `
     relation["name"="Fenway Park"]["leisure"="stadium"](${P});
@@ -99,7 +106,7 @@ const QUERIES = {
     node["highway"~"^(traffic_signals|stop|crossing)$"](${P});
     out body;`,
   landmarks: `
-    nwr["name"~"^(Fenway Park|TD Garden|Massachusetts State House|Faneuil Hall|Old North Church|New England Aquarium|South Station|North Station|Boston Public Library|Trinity Church|Prudential Tower|Prudential Center|John Hancock Tower|200 Clarendon|Bunker Hill Monument|USS Constitution|Museum of Fine Arts|Isabella Stewart Gardner Museum|Museum of Science|Massachusetts Institute of Technology|Northeastern University|Boston University|Symphony Hall|Boston Common|Public Garden|Boston Public Garden|Institute of Contemporary Art|Boston Convention and Exhibition Center|Quincy Market|Copley Square|Kenmore Square|Old State House|Paul Revere House|Hatch Memorial Shell|Boston Children's Museum|Kendall Square|Charles River Esplanade|Leonard P. Zakim Bunker Hill Memorial Bridge|Longfellow Bridge|Harvard Bridge|Boston University Bridge|Christian Science Plaza|The Mother Church|Copley Place|Boston City Hall|City Hall Plaza|Custom House Tower|Chinatown Gate|Boston Tea Party Ships & Museum|Massachusetts General Hospital|Lechmere|Haymarket|Back Bay|Bay Village|Castle Island|Fort Point|Seaport Common|Harpoon Brewery|Boston Logan International Airport)"](${W});
+    nwr["name"~"^(Fenway Park|TD Garden|Massachusetts State House|Faneuil Hall|Old North Church|New England Aquarium|South Station|North Station|Boston Public Library|Trinity Church|Prudential Tower|Prudential Center|John Hancock Tower|200 Clarendon|Bunker Hill Monument|USS Constitution|Museum of Fine Arts|Isabella Stewart Gardner Museum|Museum of Science|Massachusetts Institute of Technology|Northeastern University|Boston University|Symphony Hall|Boston Common|Public Garden|Boston Public Garden|Institute of Contemporary Art|Boston Convention and Exhibition Center|Quincy Market|Copley Square|Kenmore Square|Old State House|Paul Revere House|Hatch Memorial Shell|Boston Children's Museum|Kendall Square|Charles River Esplanade|Leonard P. Zakim Bunker Hill Memorial Bridge|Longfellow Bridge|Harvard Bridge|Boston University Bridge|Christian Science Plaza|The Mother Church|Copley Place|Boston City Hall|City Hall Plaza|Custom House Tower|Chinatown Gate|Boston Tea Party Ships & Museum|Massachusetts General Hospital|Lechmere|Haymarket|Back Bay|Bay Village|Castle Island|Fort Point|Seaport Common|Harpoon Brewery|Boston Logan International Airport|General Edward Lawrence Logan International Airport|Logan International Airport|Terminal [ABCE]|Piers Park|Maverick Square|Constitution Beach)"](${W});
     out center tags;`,
 };
 

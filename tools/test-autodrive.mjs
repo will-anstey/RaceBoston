@@ -2,18 +2,19 @@
 // are completable and to calibrate medal times.
 //
 //   node tools/test-autodrive.mjs [raceId ...]     (default: all races)
+//   PORT=8128 node tools/test-autodrive.mjs ...    (to run several at once)
 
 import path from 'node:path';
 import { startServer, launch, shotsDir, sleep } from './browser.mjs';
 
-const server = await startServer(8127);
+const server = await startServer(Number(process.env.PORT) || 8127);
 const { browser, page, logs } = await launch({ width: 1280, height: 720 });
 let failures = 0;
 try {
   await page.goto(server.url, { waitUntil: 'load' });
   await page.waitForFunction(() => window.RB && RB.game && RB.game.ready, { timeout: 120000 });
   const all = await page.evaluate(() => RB.game.menu && (window.__races = null, true));
-  const ids = process.argv.slice(2).length ? process.argv.slice(2) : ['backbay', 'freedom', 'river', 'seaport', 'campus', 'garden', 'grand'];
+  const ids = process.argv.slice(2).length ? process.argv.slice(2) : ['backbay', 'freedom', 'river', 'seaport', 'campus', 'garden', 'logan', 'grand'];
   for (const id of ids) {
     await page.evaluate((id) => {
       RB.game.setSetting('traffic', 12);
@@ -50,7 +51,7 @@ try {
           st.stuck = 0; st.reverse = 1.1; st.revSteer = -Math.sign(d || 1);
           // Record what we are stuck on.
           const o = {}; let kinds = [];
-          for (const off of c.h.circles) if (g.collision.resolveCircle(c.x + c.fx * off, c.z + c.fz * off, c.h.radius + 0.4, o)) kinds.push(['', 'building', 'railing', 'tree', 'bounds', 'traffic', 'cut wall', 'tunnel wall'][o.kind] || 'kind ' + o.kind);
+          for (const off of c.h.circles) if (g.collision.resolveCircle(c.x + c.fx * off, c.z + c.fz * off, c.h.radius + 0.4, o, c.y)) kinds.push(['', 'building', 'railing', 'tree', 'bounds', 'traffic', 'cut wall', 'tunnel wall'][o.kind] || 'kind ' + o.kind);
           const tr = g.traffic.cars.some((t) => Math.hypot(t.x - c.x, t.z - c.z) < 7);
           (window.__stuckLog = window.__stuckLog || []).push(`${c.x.toFixed(0)},${c.z.toFixed(0)} ${kinds.join('/') || (tr ? 'traffic' : 'nothing?')} [${g.hud.streetName.textContent}]`);
         }
@@ -58,11 +59,15 @@ try {
       }, 33);
     }, id);
     const t0 = Date.now();
-    let last = null, lastMove = Date.now(), lastPos = null, shots = 0;
-    while (Date.now() - t0 < 14 * 60 * 1000) {
+    let last = null, lastMove = Date.now(), lastPos = null, shots = 0, limit = 14 * 60 * 1000;
+    const splits = [];
+    while (Date.now() - t0 < limit) {
       await sleep(2000);
       last = await page.evaluate(() => ({ ...RB.game.debugState(), stats: window.__autoStats, info: RB.game.missions.race && RB.game.missions.race.info }));
       if (!last.race) break;
+      while (splits.length < last.race.next - 1) splits.push(last.race.time);
+      // The autopilot is about half gold pace; allow twice the bronze time.
+      if (last.info && last.info.bronze) limit = Math.max(14 * 60, 2 * last.info.bronze) * 1000;
       if (last.race.done) break;
       if (lastPos && Math.hypot(last.x - lastPos.x, last.z - lastPos.z) > 5) lastMove = Date.now();
       lastPos = { x: last.x, z: last.z };
@@ -84,8 +89,14 @@ try {
     console.log(`${ok ? 'DONE' : 'FAIL'}  ${id}: time ${last.race ? last.race.time.toFixed(1) : '?'}s  checkpoint ${last.race ? last.race.next : '?'}  ` +
       `route ${(info.length / 1000).toFixed(2)}km  gold ${info.gold?.toFixed(0)}s silver ${info.silver?.toFixed(0)}s bronze ${info.bronze?.toFixed(0)}s  ` +
       `crashes ${last.stats.crashes} resets ${last.stats.resets} vmax ${last.stats.maxSpeed.toFixed(0)}m/s fps ${last.fps}`);
+    // Time at each checkpoint (to within the 2 s poll), for calibrating medals.
+    if (last.race) console.log(`  splits: ${[...splits, ...(last.race.done ? [last.race.time] : [])].map((t) => t.toFixed(0)).join(' ')}`);
     await page.evaluate(() => { clearInterval(window.__auto); RB.game.inputOverride = null; });
   }
+} catch (err) {
+  // e.g. the browser died mid-race (the Mac slept): say so rather than exit 0 silently.
+  failures++;
+  console.log('ERROR', err && err.stack ? err.stack : err);
 } finally {
   const errors = logs.filter((l) => /\[(error|pageerror)\]/.test(l));
   if (errors.length) console.log('console errors:', errors.slice(0, 5).join('\n'));

@@ -224,9 +224,28 @@ export class RoadGraph {
     return best;
   }
 
+  // Is (x, z) within `margin` of the carriageway of any road lower than
+  // maxY? Every level counts, so a deck can't hide the street under it.
+  roadBelow(x, z, maxY, margin = 0) {
+    const g = this.segGrid, s = g.segs, ny = this.map.nodeY, roads = this.map.roads;
+    const n = g.query(x, z, 24 + margin);
+    for (let k = 0; k < n; k++) {
+      const i = g.result[k];
+      const road = roads[g.meta[i]];
+      const ax = s[4 * i], az = s[4 * i + 1], bx = s[4 * i + 2], bz = s[4 * i + 3];
+      const dx = bx - ax, dz = bz - az, l2 = dx * dx + dz * dz || 1e-9;
+      const t = Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / l2));
+      if (Math.hypot(x - ax - dx * t, z - az - dz * t) > road.width / 2 + margin) continue;
+      const seg = g.meta2[i];
+      if (ny[road.nodes[seg]] + (ny[road.nodes[seg + 1]] - ny[road.nodes[seg]]) * t < maxY) return true;
+    }
+    return false;
+  }
+
   // A* route between nodes; returns node index array or null.
   // Wrong-way travel on one-way streets is allowed but penalised (GPS), or
-  // forbidden entirely (traffic) with strict=true.
+  // forbidden entirely (traffic) with strict=true. Never on highways or ramps:
+  // those are walled and lead nowhere a driver would go backwards.
   route(from, to, { strict = false, wrongWay = 4 } = {}) {
     if (from < 0 || to < 0) return null;
     if (from === to) return [from];
@@ -252,7 +271,8 @@ export class RoadGraph {
         if (strict && !legal) continue;
         const v = this.eTo[e];
         if (closed[v] === sid) continue;
-        const cls = roads[this.eRoad[e]].cls;
+        const road = roads[this.eRoad[e]], cls = road.cls;
+        if (!legal && (road.link || cls <= RC.TRUNK)) continue;
         const cost = this.eLen[e] * CLASS_COST[cls] * (legal ? 1 : wrongWay);
         const gv = gu + cost;
         if (stamp[v] !== sid || gv < g[v]) {

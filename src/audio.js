@@ -72,6 +72,24 @@ export class AudioFX {
     this.gear = 1;
   }
 
+  // Jet engines: broadband roar plus a faint turbine whine.
+  setJet(level) {
+    if (!this.ctx) return;
+    if (!this.jGain) {
+      const ctx = this.ctx;
+      this.jGain = ctx.createGain(); this.jGain.gain.value = 0;
+      const f = ctx.createBiquadFilter(); f.type = 'bandpass'; f.frequency.value = 520; f.Q.value = 0.5;
+      const n = ctx.createBufferSource(); n.buffer = this.noiseBuf; n.loop = true; n.start();
+      n.connect(f).connect(this.jGain).connect(this.master);
+      this.jwGain = ctx.createGain(); this.jwGain.gain.value = 0;
+      const o = ctx.createOscillator(); o.type = 'sine'; o.frequency.value = 2300; o.start();
+      o.connect(this.jwGain).connect(this.master);
+    }
+    const t = this.ctx.currentTime, l = Math.max(0, Math.min(1, level));
+    this.jGain.gain.setTargetAtTime(l * 0.6, t, 0.25);
+    this.jwGain.gain.setTargetAtTime(l * l * 0.025, t, 0.25);
+  }
+
   setRumble(level) {
     if (this.ctx) this.rGain.gain.setTargetAtTime(Math.max(0, Math.min(1, level)) * 0.55, this.ctx.currentTime, 0.15);
   }

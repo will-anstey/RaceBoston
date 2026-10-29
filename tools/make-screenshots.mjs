@@ -114,7 +114,26 @@ try {
   await sleep(500);
   if (redOk) await page.screenshot({ path: path.join(docs, 'screenshot-redline.jpg'), type: 'jpeg', quality: 86 });
   console.log('wrote screenshot-redline.jpg', redOk);
-  await page.evaluate(() => { RB.game.exitFly(false); RB.game.hud.show(true); });
+  // A jet on short final to 4R over the harbor, with the airport behind it.
+  await page.evaluate(() => { RB.game.setSetting('planes', 4); });
+  const finalOk = await page.evaluate(async () => {
+    const g = RB.game, P = g.planes, f = g.fly, e = P.ends.get('4R');
+    for (let k = 0; k < 480; k++) {
+      const p = P.planes.find((q) => q.state === 'approach' && q.end === e && q.air.length - q.air.s < 1900 && q.air.length - q.air.s > 1300);
+      if (p) {
+        const fx = Math.sin(p.heading), fz = -Math.cos(p.heading);
+        f.x = p.x - fx * 120 + fz * 55; f.z = p.z - fz * 120 - fx * 55; f.y = p.y + 18;
+        f.yaw = Math.atan2(p.x + fx * 250 - f.x, -(p.z + fz * 250 - f.z)); f.pitch = -0.1;
+        return true;
+      }
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    return false;
+  });
+  await sleep(300);
+  if (finalOk) await page.screenshot({ path: path.join(docs, 'screenshot-logan.jpg'), type: 'jpeg', quality: 86 });
+  console.log('wrote screenshot-logan.jpg', finalOk);
+  await page.evaluate(() => { RB.game.setSetting('planes', 2); RB.game.exitFly(false); RB.game.hud.show(true); });
   // Map with a GPS route across town.
   await page.evaluate(() => {
     const g = RB.game;
