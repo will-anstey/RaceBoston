@@ -168,7 +168,7 @@ export class MapArt {
     const nodes = map.nodes;
     const rp = (r) => { const a = new Float32Array(r.nodes.length * 2); r.nodes.forEach((n, i) => { a[2 * i] = nodes[2 * n]; a[2 * i + 1] = nodes[2 * n + 1]; }); return a; };
     // Tunnels first (dashed, under everything), then surface roads, then raised decks on top.
-    const maxY = (r) => { let m = 0; for (const n of r.nodes) m = Math.max(m, map.nodeY[n]); return m; };
+    const maxY = (r) => { let m = 0; for (const n of r.nodes) m = Math.max(m, map.nodeRel[n]); return m; };
     ctx.save();
     ctx.setLineDash([6, 5]);
     ctx.globalAlpha = 0.55;

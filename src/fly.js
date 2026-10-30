@@ -123,14 +123,18 @@ export class FlyCam {
 
   // Point on the ground the camera is looking at (for shadows, traffic, signs).
   focus(out) {
+    const T = this.terrain;
     let x = this.x, z = this.z;
-    if (this.pitch < -0.05 && this.y > 0) {
-      const t = Math.min(this.y / -Math.sin(this.pitch), 260);
-      const cp = Math.cos(this.pitch);
-      x += Math.sin(this.yaw) * cp * t;
-      z += -Math.cos(this.yaw) * cp * t;
+    const g0 = T ? T.h(x, z) : 0;
+    if (this.pitch < -0.05 && this.y > g0) {
+      // March along the view ray down to the ground (hills in the way stop it).
+      const cp = Math.cos(this.pitch), sp = -Math.sin(this.pitch);
+      const dx = Math.sin(this.yaw) * cp, dz = -Math.cos(this.yaw) * cp;
+      let t = Math.min((this.y - g0) / sp, 260);
+      if (T) for (let d = 10; d < t; d += 10) if (this.y - sp * d <= T.h(this.x + dx * d, this.z + dz * d)) { t = d; break; }
+      x += dx * t; z += dz * t;
     }
-    out.x = x; out.y = Math.min(this.y, 0); out.z = z;
+    out.x = x; out.y = Math.min(this.y, T ? T.h(x, z) : 0); out.z = z;
     return out;
   }
 }

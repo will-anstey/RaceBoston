@@ -114,20 +114,35 @@ export class Sky {
     this.sunDir.set(Math.sin(az) * Math.cos(el), Math.sin(el), -Math.cos(az) * Math.cos(el)).normalize();
     u.uSunDir.value.copy(this.sunDir);
     this.sun.color.setHex(p.sun);
-    this.sun.intensity = p.sunI;
     this.hemi.color.setHex(p.hemiSky);
     this.hemi.groundColor.setHex(p.hemiGround);
-    this.hemi.intensity = p.hemiI;
-    this.scene.fog.color.setHex(p.fog);
-    this.scene.fog.near = p.fogNear;
-    this.scene.fog.far = p.fogFar;
-    this.fogBase = { near: p.fogNear, far: p.fogFar };
+    this.fogBase = { near: p.fogNear, far: p.fogFar, color: p.fog };
+    this.lightBase = { sun: p.sunI, hemi: p.hemiI };
     this.renderer.toneMappingExposure = p.exposure;
     globalUniforms.uNight.value = p.night;
     this.isNight = p.night > 0.9;
     this.nightAmount = p.night;
     this.envIntensity = p.env;
     this._buildEnv();
+    this._applyLight();
+  }
+
+  // In a tunnel: daylight barely reaches (tunnels and stations have their own
+  // lamps) and the distance fades to dark.
+  setUnderground(on) {
+    if (on === !!this.under) return;
+    this.under = on;
+    this._applyLight();
+  }
+
+  _applyLight() {
+    const u = this.under, b = this.lightBase, f = this.fogBase;
+    this.sun.intensity = b.sun * (u ? 0.22 : 1);
+    this.hemi.intensity = b.hemi * (u ? 0.45 : 1);
+    this.scene.environmentIntensity = this.envIntensity * (u ? 0.3 : 1);
+    this.scene.fog.color.setHex(u ? 0x0b0c0e : f.color);
+    this.scene.fog.near = u ? 90 : f.near;
+    this.scene.fog.far = u ? 650 : f.far;
   }
 
   _buildEnv() {
@@ -144,7 +159,7 @@ export class Sky {
 
   // See further the higher you fly (altitude in meters; 0 restores the preset).
   setFogBoost(alt) {
-    if (!this.fogBase) return;
+    if (!this.fogBase || this.under) return;
     const a = Math.max(0, alt);
     this.scene.fog.near = this.fogBase.near + a * 1.6;
     this.scene.fog.far = Math.min(8500, this.fogBase.far + a * 4);

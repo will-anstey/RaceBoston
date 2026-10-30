@@ -44,7 +44,7 @@ export class Traffic {
     const isSignal = new Uint8Array(g.N);
     this.signalPhase = new Float32Array(g.N);
     for (const n of map.signals) {
-      if (Math.abs(map.nodeY[n]) > 0.5) continue;
+      if (Math.abs(map.nodeRel[n]) > 0.5) continue;
       isSignal[n] = 1;
       const cx = Math.floor(g.nx(n) / 70), cz = Math.floor(g.nz(n) / 70);
       this.signalPhase[n] = hash01(cx * 73856093 ^ cz * 19349663) * SIGNAL_CYCLE;
@@ -196,7 +196,7 @@ export class Traffic {
     if (ml < 1e-3) { mx = n2x; mz = n2z; } else { mx /= ml; mz /= ml; }
     const sc = 1 / Math.max(0.5, mx * n2x + mz * n2z);
     const off = (offIn + offOut) / 2;
-    return [x + mx * off * sc, z + mz * off * sc, this.map.nodeY[n]];
+    return [x + mx * off * sc, z + mz * off * sc, this.map.nodeY[n], this.map.nodeRel[n]];
   }
 
   // Extend a car's path so it has at least `ahead` nodes beyond index 1.
@@ -241,6 +241,8 @@ export class Traffic {
     const L2 = Math.hypot(P2[0] - P1[0], P2[1] - P1[1]) || 0.01;
     c.P0 = P0; c.P1 = P1; c.P2 = P2; c.L = L;
     c.yA = P0[2]; c.yB = P1[2]; c.pitch = Math.atan2(P1[2] - P0[2], L);
+    // At grade: follow the ground under the lane itself (cross-slopes).
+    c.flat = Math.abs(P0[3]) < 0.05 && Math.abs(P1[3]) < 0.05;
     c.D1 = Math.min(7, L / 2, L2 / 2);
     // Turn angle at node 1.
     const ax = (P1[0] - P0[0]) / L, az = (P1[1] - P0[1]) / L, bx = (P2[0] - P1[0]) / L2, bz = (P2[1] - P1[1]) / L2;
@@ -337,7 +339,7 @@ export class Traffic {
       tx = c.dir[0]; tz = c.dir[1];
     }
     c.x = x; c.z = z;
-    c.y = c.yA + (c.yB - c.yA) * Math.max(0, Math.min(1, c.s / L));
+    c.y = c.flat ? this.map.terrain.h(x, z) : c.yA + (c.yB - c.yA) * Math.max(0, Math.min(1, c.s / L));
     c.heading = Math.atan2(tx, -tz);
   }
 

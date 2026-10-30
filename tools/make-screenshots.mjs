@@ -79,11 +79,11 @@ try {
   // Landmarks from the air.
   for (const [file, name, ox, oy, oz, ty, fov] of [['screenshot-fenway.jpg', 'Fenway Park', 170, 110, 150, 0, 55], ['screenshot-statehouse.jpg', 'Massachusetts State House', 25, 34, 150, 20, 50]]) {
     await page.evaluate((name, ox, oy, oz, ty, fov) => {
-      const g = RB.game, l = g.map.landmarks.find((m) => m.name === name);
+      const g = RB.game, l = g.map.landmarks.find((m) => m.name === name), y0 = g.map.terrain.h(l.x, l.z);
       g.inputOverride = { brake: 1 };
       g.state = 'paused'; g.menu.hide(); g.hud.show(false);
       g.car.x = l.x; g.car.z = l.z;
-      g.camera.position.set(l.x + ox, oy, l.z + oz); g.camera.lookAt(l.x, ty, l.z); g.camera.fov = fov; g.camera.updateProjectionMatrix();
+      g.camera.position.set(l.x + ox, y0 + oy, l.z + oz); g.camera.lookAt(l.x, y0 + ty, l.z); g.camera.fov = fov; g.camera.updateProjectionMatrix();
     }, name, ox, oy, oz, ty, fov);
     await sleep(1800);
     await page.screenshot({ path: path.join(docs, file), type: 'jpeg', quality: 86 });
@@ -122,7 +122,7 @@ try {
       const p = P.planes.find((q) => q.state === 'approach' && q.end === e && q.air.length - q.air.s < 1900 && q.air.length - q.air.s > 1300);
       if (p) {
         const fx = Math.sin(p.heading), fz = -Math.cos(p.heading);
-        f.x = p.x - fx * 120 + fz * 55; f.z = p.z - fz * 120 - fx * 55; f.y = p.y + 18;
+        f.x = p.x - fx * 120 + fz * 55; f.z = p.z - fz * 120 - fx * 55; f.y = p.y + P.elev + 18;
         f.yaw = Math.atan2(p.x + fx * 250 - f.x, -(p.z + fz * 250 - f.z)); f.pitch = -0.1;
         return true;
       }
@@ -134,6 +134,47 @@ try {
   if (finalOk) await page.screenshot({ path: path.join(docs, 'screenshot-logan.jpg'), type: 'jpeg', quality: 86 });
   console.log('wrote screenshot-logan.jpg', finalOk);
   await page.evaluate(() => { RB.game.setSetting('planes', 2); RB.game.exitFly(false); RB.game.hud.show(true); });
+  // Up Beacon Hill: Joy Street climbing toward the State House.
+  await page.evaluate(() => {
+    const g = RB.game, T = g.map.terrain;
+    g.setSetting('tod', 'day');
+    g.chase.mode = 0;
+    const sh = g.map.landmarks.find((l) => l.name === 'Massachusetts State House');
+    let best = null;
+    for (const r of g.map.roads) {
+      if (r.name !== 'Joy Street' || Math.hypot(g.graph.nx(r.nodes[0]) - sh.x, g.graph.nz(r.nodes[0]) - sh.z) > 600) continue;
+      for (let i = 0; i + 1 < r.nodes.length; i++) {
+        const a = r.nodes[i], b = r.nodes[i + 1], ha = T.h(g.graph.nx(a), g.graph.nz(a)), hb = T.h(g.graph.nx(b), g.graph.nz(b));
+        if (!best || Math.min(ha, hb) < best.h) best = ha < hb ? { a, b, h: ha } : { a: b, b: a, h: hb };
+      }
+    }
+    const { a, b } = best;
+    g.placeCar(g.graph.nx(a), g.graph.nz(a), Math.atan2(g.graph.nx(b) - g.graph.nx(a), -(g.graph.nz(b) - g.graph.nz(a))));
+    g.inputOverride = { throttle: 0.45 };
+  });
+  await sleep(3000);
+  await page.screenshot({ path: path.join(docs, 'screenshot-hill.jpg'), type: 'jpeg', quality: 86 });
+  console.log('wrote screenshot-hill.jpg');
+  // The cab of a Green Line train pulling into Park Street.
+  const cabOk = await page.evaluate(async () => {
+    const g = RB.game, { trainLines } = await import('./src/trainmode.js');
+    const l = trainLines(g.map).find((q) => q.ref === 'Green-D' && q.from === 'Union Square');
+    if (!l) return false;
+    g.inputOverride = null;
+    g.setSetting('trains', 3);
+    g.beginTrain(l.i);
+    const r = g.trainMode.run, k = r.stops.findIndex((s) => s.name === 'Park Street');
+    if (k < 0) return false;
+    r.phase = 'running'; r.started = true; r.next = k;
+    r.train.head = r.stops[k].s - 75; r.train.v = 4.2;
+    g.trainMode.camera.snap();
+    g.inputOverride = { brake: 0.1 };
+    await new Promise((res) => setTimeout(res, 2600));
+    return true;
+  });
+  if (cabOk) await page.screenshot({ path: path.join(docs, 'screenshot-subway.jpg'), type: 'jpeg', quality: 86 });
+  console.log('wrote screenshot-subway.jpg', cabOk);
+  await page.evaluate(() => { const g = RB.game; g.inputOverride = null; g.setSetting('trains', 2); g.begin('free'); });
   // Map with a GPS route across town.
   await page.evaluate(() => {
     const g = RB.game;

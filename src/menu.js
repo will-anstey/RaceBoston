@@ -3,6 +3,8 @@
 import { RACES } from './missions.js';
 import { formatTime, formatDistance } from './util.js';
 import { esc } from './hud.js';
+import { trainLines } from './trainmode.js';
+import { LINE_COLOR } from './railworld.js';
 
 export const CARS = [
   { id: 'coupe', model: 'coupe', handling: 'coupe', name: 'Sports Coupe', color: 0xc8102e, desc: '200 mph flat out, 0-60 in 3.3 s. Loves the Pike.' },
@@ -103,6 +105,8 @@ export class Menu {
     switch (act) {
       case 'free': g.begin('free'); break;
       case 'fly': g.beginFly(); break;
+      case 'lines': this.show('lines'); break;
+      case 'train': g.beginTrain(+arg); break;
       case 'races': this.show('races'); break;
       case 'race': g.begin('race', arg); break;
       case 'taxi': g.begin('taxi'); break;
@@ -142,13 +146,14 @@ export class Menu {
       <div class="menu-list">
         <button class="menu-btn primary" data-act="free"><span>Free Roam<span class="desc">Explore and discover ${g.map.landmarks.length} landmarks (${g.missions.discovered.size} found)</span></span><span class="meta">&#9654;</span></button>
         <button class="menu-btn" data-act="fly"><span>Fly Around<span class="desc">Ghost camera: fly anywhere, through anything</span></span><span class="meta">&#9654;</span></button>
+        <button class="menu-btn" data-act="lines"><span>Drive a Train<span class="desc">Red, Orange, Blue and Green Lines and the commuter rail, through the subway</span></span><span class="meta">&#9656;</span></button>
         <button class="menu-btn" data-act="races"><span>Races<span class="desc">${RACES.length} checkpoint races &middot; ${golds} gold</span></span><span class="meta">&#9656;</span></button>
         <button class="menu-btn" data-act="taxi"><span>Taxi Shift<span class="desc">Best shift $${g.missions.taxiBest.toFixed(2)}</span></span><span class="meta">&#9656;</span></button>
         <button class="menu-btn" data-act="garage"><span>Garage<span class="desc">${esc(car.name)}</span></span><span class="meta">&#9656;</span></button>
         <button class="menu-btn" data-act="settings"><span>Settings</span><span class="meta">&#9656;</span></button>
         <button class="menu-btn" data-act="controls"><span>Controls</span><span class="meta">&#9656;</span></button>
       </div>
-      <div class="small-print">Map data &copy; OpenStreetMap contributors (ODbL). Keyboard, gamepad and touch supported.</div>`;
+      <div class="small-print">Map data &copy; OpenStreetMap contributors (ODbL). Elevation: USGS 3DEP. Keyboard, gamepad and touch supported.</div>`;
   }
 
   _races() {
@@ -161,6 +166,18 @@ export class Menu {
         <span class="meta">${best ? formatTime(best) : '--:--'}<span class="medal ${medal || 'none'}"></span></span></button>`;
     }).join('');
     return `<div class="menu-title">Races</div><div class="menu-list">${rows}<button class="menu-btn back" data-act="back"><span>&larr; Back</span></button></div>`;
+  }
+
+  _lines() {
+    const g = this.g, metric = g.settings.metric, best = g.trainMode.best;
+    const rows = trainLines(g.map).map((l) => {
+      const b = best[l.key];
+      return `<button class="menu-btn" data-act="train" data-arg="${l.i}"><span><span class="line-dot" style="background:${LINE_COLOR[l.svc]}"></span>${esc(l.title)}<span class="desc">${esc(l.from)} &rarr; ${esc(l.to)} &middot; ${l.stops} stops &middot; ${formatDistance(l.len, metric)}</span></span>
+        <span class="meta">${b ? `Best ${b.score}` : '&#9654;'}</span></button>`;
+    }).join('');
+    return `<div class="menu-title">Drive a Train</div>
+      <p class="tagline">W power &middot; S brake &middot; Space emergency brake &middot; stop with the train along the platform &middot; drag to look around</p>
+      <div class="menu-list">${rows}<button class="menu-btn back" data-act="back"><span>&larr; Back</span></button></div>`;
   }
 
   _garage() {
@@ -184,6 +201,7 @@ export class Menu {
       ['Space', 'Handbrake (drift)'], ['Shift', 'Boost'], ['H', 'Horn'], ['B', 'Look back'],
       ['C', 'Change camera'], ['M', 'Map &amp; GPS waypoint'], ['R', 'Reset car to road'], ['N', 'Day / sunset / night'],
       ['G', 'Fly mode (ghost camera)'], ['Fly mode', 'Mouse to look (click), WASD, Space/Q up/down, Shift fast, wheel speed, Enter drop the car'],
+      ['Drag', 'Look around (car and train)'], ['Train', 'W power, S brake, Space emergency brake, C cab / chase camera'],
       ['K', 'Mute'], ['F', 'Fullscreen'], ['Esc / P', 'Pause'],
       ['Gamepad', 'RT gas, LT brake, A handbrake, B boost, X reset, Y camera, Start pause'],
     ].map(([k, v]) => `<b>${k}</b><span>${v}</span>`).join('');
@@ -193,11 +211,13 @@ export class Menu {
 
   _pause() {
     const g = this.g;
-    const restart = g.missions.mode !== 'free' ? `<button class="menu-btn" data-act="restart"><span>Restart ${g.missions.mode === 'taxi' ? 'shift' : 'race'}</span></button>` : '';
+    const restart = g.trainMode.active ? '<button class="menu-btn" data-act="restart"><span>Restart line</span></button>'
+      : g.missions.mode !== 'free' ? `<button class="menu-btn" data-act="restart"><span>Restart ${g.missions.mode === 'taxi' ? 'shift' : 'race'}</span></button>` : '';
     return `<div class="menu-title">Paused</div><div class="menu-list">
       <button class="menu-btn primary" data-act="resume"><span>Resume</span></button>${restart}
       <button class="menu-btn" data-act="free"><span>Free Roam</span></button>
       <button class="menu-btn" data-act="fly"><span>Fly Around</span></button>
+      <button class="menu-btn" data-act="lines"><span>Drive a Train</span><span class="meta">&#9656;</span></button>
       <button class="menu-btn" data-act="races"><span>Races</span><span class="meta">&#9656;</span></button>
       <button class="menu-btn" data-act="taxi"><span>Taxi Shift</span></button>
       <button class="menu-btn" data-act="garage"><span>Garage</span><span class="meta">&#9656;</span></button>
@@ -207,6 +227,18 @@ export class Menu {
   }
 
   _results(r) {
+    if (r.train) {
+      const medalName = r.medal ? r.medal[0].toUpperCase() + r.medal.slice(1) + ' medal' : 'No medal';
+      const extra = [`${r.made}/${r.scored} stops`, formatTime(r.time)];
+      if (r.overspeed > 0.5) extra.push(`${Math.round(r.overspeed)} s over the limit`);
+      if (r.trips) extra.push(`${r.trips} emergency stop${r.trips === 1 ? '' : 's'}`);
+      return `<div class="menu-title">${esc(r.title)}</div>
+        <div class="brand-top" style="font-size:64px;font-weight:900;font-style:italic">${r.score}<span style="font-size:24px;opacity:0.6"> / ${r.max}</span></div>
+        <p class="tagline"><span class="medal ${r.medal || 'none'}"></span> ${medalName}${r.record ? ' &middot; <b style="color:#f4c542">New best!</b>' : r.prev != null ? ` &middot; Best ${r.prev}` : ''}<br>${extra.join(' &middot; ')}</p>
+        <div class="menu-list"><button class="menu-btn primary" data-act="retry"><span>Drive it again</span></button>
+        <button class="menu-btn" data-act="lines"><span>Choose a line</span><span class="meta">&#9656;</span></button>
+        <button class="menu-btn" data-act="free"><span>Free Roam</span></button><button class="menu-btn back" data-act="home"><span>Main menu</span></button></div>`;
+    }
     if (r.taxi) {
       return `<div class="menu-title">Shift over</div>
         <div class="brand-top" style="font-size:64px;font-weight:900;font-style:italic;color:#7ee081">$${r.money.toFixed(2)}</div>

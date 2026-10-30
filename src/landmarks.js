@@ -276,21 +276,24 @@ export function buildLandmarks(map, add) {
   const fenwayField = findField(map);
 
   const wallsOnly = new Set();
+  // Props are built around y = 0; hang each landmark's in a group at its ground.
+  const at = (y) => { const g = new THREE.Group(); g.position.y = y; props.add(g); return g; };
   const parts = (id) => (byId.get(id) || []).map((i) => [i, map.buildings[i]]);
   const tallest = (id) => parts(id).reduce((best, [, b]) => (!best || b.h > best.h ? b : best), null);
   // ---- group-level replacements
   const bunker = parts(L.BUNKER_HILL);
-  if (bunker.length) { buildObelisk(bunker.map(([, b]) => b), props); for (const [i] of bunker) handled.add(i); }
-  for (const [i, b] of parts(L.CONSTITUTION)) { buildShip(b, props, T); handled.add(i); }
-  for (const [i, b] of parts(L.GREAT_DOME)) { buildDome(b, props, 0xd3ccbd, b.minH, b.h); handled.add(i); }
-  for (const [i, b] of parts(L.GREEN_MONSTER)) { buildMonster(b, fenwayField, props, T); handled.add(i); }
+  if (bunker.length) { buildObelisk(bunker.map(([, b]) => b), at(Math.min(...bunker.map(([, b]) => b.base)))); for (const [i] of bunker) handled.add(i); }
+  for (const [i, b] of parts(L.CONSTITUTION)) { buildShip(b, at(b.base), T); handled.add(i); }
+  for (const [i, b] of parts(L.GREAT_DOME)) { buildDome(b, at(b.base), 0xd3ccbd, b.minH, b.h); handled.add(i); }
+  for (const [i, b] of parts(L.GREEN_MONSTER)) { buildMonster(b, fenwayField, at(b.base), T); handled.add(i); }
   // State House: OSM stacks drum/dome/lantern parts; swap them for a gilded dome.
   const shParts = parts(L.STATE_HOUSE);
   if (shParts.length) {
     const lantern = tallest(L.STATE_HOUSE);
     const [lx, lz] = centroid(lantern.rings[0]);
     const domeParts = shParts.filter(([, b]) => { const [x, z] = centroid(b.rings[0]); return Math.hypot(x - lx, z - lz) < 14 && b.h > 21; });
-    const base = Math.max(...shParts.filter(([i]) => !domeParts.some(([j]) => j === i)).map(([, b]) => b.h));
+    // World heights: the parts step down Beacon Hill.
+    const base = Math.max(...shParts.filter(([i]) => !domeParts.some(([j]) => j === i)).map(([, b]) => b.base + b.h));
     let drumR = 9;
     for (const [, b] of domeParts) {
       const r = b.rings[0];
@@ -300,10 +303,10 @@ export function buildLandmarks(map, add) {
     }
     if (domeParts.length >= 2) {
       for (const [i] of domeParts) handled.add(i);
-      buildGoldDome(props, lx, lz, base, Math.max(6, Math.min(12, drumR)), lantern.h);
+      buildGoldDome(props, lx, lz, base, Math.max(6, Math.min(12, drumR)), lantern.base + lantern.h);
     } else {
       const { origin, metersPerDegree: m } = map.meta;
-      buildGoldDome(props, (-71.06374 - origin.lon) * m.lon, -(42.35817 - origin.lat) * m.lat, lantern.h, 8, lantern.h + 20);
+      buildGoldDome(props, (-71.06374 - origin.lon) * m.lon, -(42.35817 - origin.lat) * m.lat, lantern.base + lantern.h, 8, lantern.base + lantern.h + 20);
     }
   }
   // ---- textured walls (and flat roofs) for everything else
@@ -315,6 +318,7 @@ export function buildLandmarks(map, add) {
       if (!skin) continue;
       const plan = roofPlan(bd);
       let topAt = () => plan.wallTop;
+      const g0 = bd.base;
       if (id === L.FENWAY && skin === 'seats' && fenwayField) {
         // Slope stands down toward the field.
         const [fx, fz] = fenwayField.center;
@@ -326,25 +330,25 @@ export function buildLandmarks(map, add) {
       }
       if (skin === 'seats') {
         // Brick outside (one facade per wall height), seats on the sloped top.
-        walls(get('fenway'), bd.rings, bd.minH, topAt, SKIN.fenway.w, Math.max(8, bd.h - bd.minH));
-        roofTop(get('seats'), bd.rings, topAt, SKIN.seats.w);
+        walls(get('fenway'), bd.rings, g0 + bd.minH, (x, z) => g0 + topAt(x, z), SKIN.fenway.w, Math.max(8, bd.h - bd.minH));
+        roofTop(get('seats'), bd.rings, (x, z) => g0 + topAt(x, z), SKIN.seats.w);
         handled.add(i);
         continue;
       }
       const S = SKIN[skin];
-      walls(get(skin), bd.rings, bd.minH, topAt, S.w, skin === 'fenway' ? Math.max(8, plan.wallTop - bd.minH) : S.h);
-      if (plan.kind === 'flat') { roofTop(get('roof:' + skin), bd.rings, topAt, 20); handled.add(i); }
+      walls(get(skin), bd.rings, g0 + bd.minH, (x, z) => g0 + topAt(x, z), S.w, skin === 'fenway' ? Math.max(8, plan.wallTop - bd.minH) : S.h);
+      if (plan.kind === 'flat') { roofTop(get('roof:' + skin), bd.rings, (x, z) => g0 + topAt(x, z), 20); handled.add(i); }
       else wallsOnly.add(i);
     }
   }
   // ---- per-landmark props
   const ch = tallest(L.CUSTOM_HOUSE);
-  if (ch) buildClockTower(props, ch, T);
+  if (ch) buildClockTower(at(ch.base), ch, T);
   const pru = tallest(L.PRUDENTIAL);
-  if (pru) buildMast(props, pru, 52);
+  if (pru) buildMast(at(pru.base), pru, 52);
   const fan = tallest(L.FANEUIL);
-  if (fan) buildGrasshopper(props, fan);
-  if (fenwayField) buildFenwayExtras(map, fenwayField, props, byId);
+  if (fan) buildGrasshopper(at(fan.base), fan);
+  if (fenwayField) buildFenwayExtras(map, fenwayField, at(map.terrain.h(...fenwayField.center)), byId);
 
   // Materials per skin.
   for (const [k, m] of Object.entries(meshes)) {
@@ -478,14 +482,14 @@ function buildFenwayExtras(map, field, props, byId) {
       const len = s < 0 ? 94 : 91;
       const line = new THREE.Mesh(new THREE.PlaneGeometry(0.12, len), white);
       line.rotation.set(-Math.PI / 2, 0, -a);
-      line.position.set(hx + (Math.sin(a) * len) / 2, 0.03, hz - (Math.cos(a) * len) / 2);
+      line.position.set(hx + (Math.sin(a) * len) / 2, 0.13, hz - (Math.cos(a) * len) / 2);
       line.renderOrder = -27;
       props.add(line);
     }
     for (const [ang, dist] of [[-Math.PI / 4, 27.4], [0, 38.8], [Math.PI / 4, 27.4], [0, 0]]) {
       const a = base + ang;
       const b = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.1, 0.4), white);
-      b.position.set(hx + Math.sin(a) * dist, 0.05, hz - Math.cos(a) * dist);
+      b.position.set(hx + Math.sin(a) * dist, 0.15, hz - Math.cos(a) * dist);
       b.rotation.y = -base;
       props.add(b);
     }

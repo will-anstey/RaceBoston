@@ -1,30 +1,32 @@
-// Trains on the surface and elevated rail network: Red Line over the
-// Longfellow, Green Line down Huntington and Comm Ave, commuter rail into
-// North and South Station, Amtrak, Orange Line, Grand Junction freight.
+// Trains on the rail network: Red Line over the Longfellow, Green Line down
+// Huntington and Comm Ave, commuter rail into North and South Station,
+// Amtrak, Orange Line, Grand Junction freight, and the subway underneath.
 // Trains follow the OSM track graph (preferring track their line uses),
-// dwell at stops, reverse at terminals, and dive into / emerge from tunnel
-// portals (the ground mask hides them once they're underground).
+// dwell at stops and reverse at terminals. While you drive they keep to the
+// surface (the ground mask hides them once they're underground); in train
+// mode they run in the tunnels too, and keep off the player's line.
 
 import * as THREE from 'three';
 import { RAIL_SVC, RAIL_NODE, RAIL_WAY } from './mapdata.js';
 import { clamp } from './util.js';
 import { globalUniforms } from './materials.js';
 
+// speed: cruising (m/s); slow: the slowest a curve takes it down to.
 const SERVICES = [
-  { id: 'red', bit: RAIL_SVC.RED, color: 0xda291c, model: 'metro', cars: 6, len: 21.2, wid: 3.05, hgt: 3.7, speed: 18, dwell: 14, weight: 4 },
-  { id: 'orange', bit: RAIL_SVC.ORANGE, color: 0xed8b00, model: 'metro', cars: 6, len: 19.8, wid: 3.05, hgt: 3.7, speed: 18, dwell: 14, weight: 3 },
-  { id: 'blue', bit: RAIL_SVC.BLUE, color: 0x003da5, model: 'metro', cars: 6, len: 14.8, wid: 2.8, hgt: 3.5, speed: 17, dwell: 12, weight: 2 },
+  { id: 'red', bit: RAIL_SVC.RED, color: 0xda291c, model: 'metro', cars: 6, len: 21.2, wid: 3.05, hgt: 3.7, speed: 22.4, slow: 11.2, dwell: 14, weight: 4 },
+  { id: 'orange', bit: RAIL_SVC.ORANGE, color: 0xed8b00, model: 'metro', cars: 6, len: 19.8, wid: 3.05, hgt: 3.7, speed: 22.4, slow: 11.2, dwell: 14, weight: 3 },
+  { id: 'blue', bit: RAIL_SVC.BLUE, color: 0x003da5, model: 'metro', cars: 6, len: 14.8, wid: 2.8, hgt: 3.5, speed: 20.1, slow: 11.2, dwell: 12, weight: 2 },
   // Green Line: two articulated LRVs = four 11 m sections.
-  { id: 'green', bit: RAIL_SVC.GREEN, color: 0x00843d, model: 'lrv', cars: 4, len: 11.2, wid: 2.65, hgt: 3.6, speed: 11, dwell: 12, weight: 4, gap: 0.25 },
-  { id: 'commuter', bit: RAIL_SVC.COMMUTER, color: 0x80276c, model: 'bilevel', cars: 6, len: 25.9, wid: 3.2, hgt: 4.6, speed: 21, dwell: 24, weight: 4, loco: 'mbta' },
-  { id: 'amtrak', bit: RAIL_SVC.AMTRAK, color: 0x1d4f91, model: 'coach', cars: 6, len: 25.9, wid: 3.2, hgt: 4.1, speed: 23, dwell: 24, weight: 1, loco: 'amtrak' },
-  { id: 'freight', bit: RAIL_SVC.FREIGHT, color: 0x6b3f2a, model: 'boxcar', cars: 7, len: 16.5, wid: 3.1, hgt: 4.1, speed: 8, dwell: 0, weight: 1, loco: 'freight' },
+  { id: 'green', bit: RAIL_SVC.GREEN, color: 0x00843d, model: 'lrv', cars: 4, len: 11.2, wid: 2.65, hgt: 3.6, speed: 13.4, slow: 8.9, dwell: 12, weight: 4, gap: 0.25 },
+  { id: 'commuter', bit: RAIL_SVC.COMMUTER, color: 0x80276c, model: 'bilevel', cars: 6, len: 25.9, wid: 3.2, hgt: 4.6, speed: 31.3, slow: 13.4, dwell: 24, weight: 4, loco: 'mbta' },
+  { id: 'amtrak', bit: RAIL_SVC.AMTRAK, color: 0x1d4f91, model: 'coach', cars: 6, len: 25.9, wid: 3.2, hgt: 4.1, speed: 33.5, slow: 13.4, dwell: 24, weight: 1, loco: 'amtrak' },
+  { id: 'freight', bit: RAIL_SVC.FREIGHT, color: 0x6b3f2a, model: 'boxcar', cars: 7, len: 16.5, wid: 3.1, hgt: 4.1, speed: 13.4, slow: 6.7, dwell: 0, weight: 1, loco: 'freight' },
 ];
 const LOCO_LEN = 20.5;
 const MAX_PER_SVC = 16;
 // Per density level (Off..Max): trains around the player and spawn interval.
 const DENSITY = [{ n: 0, every: 99 }, { n: 4, every: 3 }, { n: 8, every: 1.6 }, { n: 14, every: 0.9 }, { n: 22, every: 0.45 }];
-const LOOKAHEAD = 320;
+const LOOKAHEAD = 700;   // m of track ahead: room to brake from 70 mph for the next stop
 
 // ---------------------------------------------------------------- models
 function boxGeo(w, h, d, x, y, z, color) {
@@ -182,6 +184,11 @@ export class Trains {
   constructor(game) {
     this.g = game;
     this.net = new RailNet(game.map);
+    this.T = game.map.terrain;
+    this.rel = game.map.railRel;
+    this.underground = false;   // spawn and keep trains underground too (train mode)
+    this.avoid = null;          // rail nodes AI trains keep off (the player's line)
+    this.player = null;         // the player's train, drawn with the rest
     this.trains = [];
     this.target = 7;
     this.timer = 0;
@@ -211,8 +218,8 @@ export class Trains {
       this.meshes.set(key, { body, glass, n: 0 });
     };
     for (const s of SERVICES) {
-      mk(s.id, carModel(s.model, s, s.len), MAX_PER_SVC * s.cars);
-      if (s.loco) mk('loco:' + s.id, carModel('loco', s, LOCO_LEN), MAX_PER_SVC);
+      mk(s.id, carModel(s.model, s, s.len), (MAX_PER_SVC + 1) * s.cars);
+      if (s.loco) mk('loco:' + s.id, carModel('loco', s, LOCO_LEN), MAX_PER_SVC + 1);
     }
     this._m = new THREE.Matrix4();
     this._q = new THREE.Quaternion();
@@ -234,6 +241,42 @@ export class Trains {
   // ---- path helpers
   _pt(n) { return { x: this.net.px(n), y: this.net.y[n], z: this.net.pz(n), s: 0, node: n }; }
 
+  service(id) { return SERVICES.find((s) => s.id === id) || SERVICES[0]; }
+
+  // Cars of a train (loco first), coupling gap and overall length.
+  consist(svc) {
+    const cars = [];
+    for (let i = 0; i < svc.cars; i++) cars.push(svc.loco && i === 0 ? { key: 'loco:' + svc.id, len: LOCO_LEN } : { key: svc.id, len: svc.len });
+    const gap = svc.gap ?? 0.9;
+    return { cars, gap, length: cars.reduce((acc, c) => acc + c.len, 0) + gap * (svc.cars - 1) };
+  }
+
+  // Track points along a node path (s = metres along), continued `back`
+  // metres behind its start and `ahead` metres past its end on the network
+  // (straight on, level, past the map edge).
+  pathAlong(nodes, bit, back = 0, ahead = 0) {
+    const pts = Array.from(nodes, (n) => this._pt(n));
+    const grow = (q, p, len) => {
+      const out = [q, p];
+      for (let acc = 0; acc < len;) {
+        const a = out[out.length - 2], b = out[out.length - 1];
+        const n = a.node >= 0 && b.node >= 0 ? this.net.next(a.node, b.node, bit) : -1;
+        const c = n >= 0 ? this._pt(n) : this._virtual(a, b, 'edge');
+        acc += Math.hypot(c.x - b.x, c.z - b.z);
+        out.push(c);
+      }
+      return out.slice(2);
+    };
+    const n = pts.length;
+    const all = [...grow(pts[1], pts[0], back).reverse(), ...pts, ...grow(pts[n - 2], pts[n - 1], ahead)];
+    all[0].s = 0;
+    for (let i = 1; i < all.length; i++) all[i].s = all[i - 1].s + Math.hypot(all[i].x - all[i - 1].x, all[i].y - all[i - 1].y, all[i].z - all[i - 1].z);
+    return all;
+  }
+
+  sample(t, s, out) { return this._sample(t, s, out); }
+  _relAt(p) { return p.y - this.T.h(p.x, p.z); }
+
   // Virtual track past a portal (descending) or the map edge (level).
   _virtual(a, b, kind, step = 20) {
     const dx = b.x - a.x, dz = b.z - a.z, l = Math.hypot(dx, dz) || 1;
@@ -247,6 +290,7 @@ export class Trains {
       const b = pts[pts.length - 1], a = pts[pts.length - 2];
       if (b.virtual || b.node < 0) { pts.push(this._virtual(a, b, b.virtual || 'edge')); continue; }
       const n = a.node >= 0 ? this.net.next(a.node, b.node, t.svc.bit) : -1;
+      if (n >= 0 && this.avoid && this.avoid.has(n)) { t.endS = b.s; break; } // the player's line: stop and turn back
       if (n < 0) {
         const f = this.net.flags[b.node];
         if (f & RAIL_NODE.PORTAL) { pts.push(this._virtual(a, b, 'portal')); continue; }
@@ -281,11 +325,13 @@ export class Trains {
   // ---- spawning
   // Edges of a service within the spawn ring around the focus.
   _nearEdges(bit, focus) {
-    const E = this.net.spawnEdges.get(bit) || [], out = [];
+    const E = this.net.spawnEdges.get(bit) || [], out = [], R = this.rel, avoid = this.avoid;
     for (let e = 0; e < E.length; e += 2) {
-      const a = E[e];
+      const a = E[e], b = E[e + 1];
+      if (!this.underground && R[a] < -3 && R[b] < -3) continue;
+      if (avoid && (avoid.has(a) || avoid.has(b))) continue;
       const d = Math.hypot(this.net.px(a) - focus.x, this.net.pz(a) - focus.z);
-      if (d > 120 && d < 1500) out.push(E[e], E[e + 1]);
+      if (d > 120 && d < 1500) out.push(a, b);
     }
     return out;
   }
@@ -317,7 +363,8 @@ export class Trains {
       if (!t) continue;
       // Keep trains apart on the same track.
       const h = this._sample(t, t.head, {});
-      if (this.trains.some((o) => { const q = this._sample(o, o.head - o.length / 2, {}); return Math.hypot(q.x - h.x, q.z - h.z) < o.length + t.length; })) continue;
+      const apart = (o) => { const q = this._sample(o, o.head - o.length / 2, {}); return Math.hypot(q.x - h.x, q.z - h.z) < o.length + t.length; };
+      if (this.trains.some(apart) || (this.player && apart(this.player))) continue;
       this.trains.push(t);
       return;
     }
@@ -325,11 +372,7 @@ export class Trains {
 
   _make(svc, a, b) {
     const net = this.net;
-    const cars = [];
-    const n = svc.cars;
-    for (let i = 0; i < n; i++) cars.push(svc.loco && i === 0 ? { key: 'loco:' + svc.id, len: LOCO_LEN } : { key: svc.id, len: svc.len });
-    const gap = svc.gap ?? 0.9;
-    const length = cars.reduce((acc, c) => acc + c.len, 0) + gap * (n - 1);
+    const { cars, gap, length } = this.consist(svc);
     // Walk backward from a (away from b) to lay the train's body.
     const back = [this._pt(b), this._pt(a)];
     let acc = Math.hypot(back[1].x - back[0].x, back[1].z - back[0].z);
@@ -337,6 +380,7 @@ export class Trains {
       const q = back[back.length - 2], p = back[back.length - 1];
       if (p.node < 0) { const v = this._virtual(q, p, p.virtual); acc += 20; back.push(v); continue; }
       const nx = net.next(q.node, p.node, svc.bit);
+      if (nx >= 0 && this.avoid && this.avoid.has(nx)) return null;
       if (nx < 0) {
         const f = net.flags[p.node];
         if (f & (RAIL_NODE.PORTAL | RAIL_NODE.EDGE)) { const v = this._virtual(q, p, f & RAIL_NODE.PORTAL ? 'portal' : 'edge'); acc += 20; back.push(v); continue; }
@@ -384,7 +428,7 @@ export class Trains {
       // Speed: line speed, slower in curves, braking for stops and buffers.
       let vt = t.svc.speed;
       const bend = this._bendAhead(t);
-      vt = Math.min(vt, Math.max(5, t.svc.speed * (1 - bend * 2.2)));
+      vt = Math.min(vt, Math.max(t.svc.slow, t.svc.speed * (1 - bend * 2.2)));
       const nextStop = t.stops.length ? t.stops[0] : Infinity;
       const stopAt = Math.min(nextStop, t.endS === null ? Infinity : t.endS - 2);
       if (stopAt < Infinity) vt = Math.min(vt, Math.sqrt(2 * 0.8 * Math.max(0, stopAt - t.head)));
@@ -407,18 +451,22 @@ export class Trains {
       // Despawn: fully underground, or far from the focus.
       const hp = this._sample(t, t.head, tmp), tp = this._sample(t, t.head - t.length, tmp2);
       const far = Math.min(Math.hypot(hp.x - focus.x, hp.z - focus.z), Math.hypot(tp.x - focus.x, tp.z - focus.z)) > 1900;
-      const buried = hp.y < -6 && tp.y < -6;
+      const buried = !this.underground && this._relAt(hp) < -6 && this._relAt(tp) < -6;
       const lost = t.life > 600 && t.v < 0.1 && t.dwell <= 0;
       if (far || (buried && t.life > 3) || lost) this.trains.splice(i, 1);
     }
     this._render();
   }
 
+  // Turn (radians) over the next 50 m, or over 50 m about 3 s ahead if sharper.
   _bendAhead(t) {
-    const a = this._sample(t, t.head, {}), b = this._sample(t, t.head + 25, {}), c = this._sample(t, t.head + 50, {});
-    const ux = b.x - a.x, uz = b.z - a.z, vx = c.x - b.x, vz = c.z - b.z;
-    const cos = (ux * vx + uz * vz) / ((Math.hypot(ux, uz) || 1) * (Math.hypot(vx, vz) || 1));
-    return Math.acos(clamp(cos, -1, 1));
+    const bend = (s) => {
+      const a = this._sample(t, s, {}), b = this._sample(t, s + 25, {}), c = this._sample(t, s + 50, {});
+      const ux = b.x - a.x, uz = b.z - a.z, vx = c.x - b.x, vz = c.z - b.z;
+      const cos = (ux * vx + uz * vz) / ((Math.hypot(ux, uz) || 1) * (Math.hypot(vx, vz) || 1));
+      return Math.acos(clamp(cos, -1, 1));
+    };
+    return Math.max(bend(t.head), bend(t.head + t.v * 3));
   }
 
   _render() {
@@ -427,7 +475,10 @@ export class Trains {
     const f = {}, r = {};
     const night = globalUniforms.uNight.value;
     this.glassMat.emissiveIntensity = night * 1.3;
-    for (const t of this.trains) {
+    // The player's train first, so it always gets instances.
+    for (let k = -1; k < this.trains.length; k++) {
+      const t = k < 0 ? this.player : this.trains[k];
+      if (!t) continue;
       let s = t.head;
       for (const car of t.cars) {
         const sf = s - car.len * 0.14, sr = s - car.len * 0.86;

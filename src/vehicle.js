@@ -32,7 +32,7 @@ export class Vehicle {
   reset(x, z, heading, y = 0) {
     this.x = x; this.z = z; this.heading = heading;
     this.y = y; this.vy = 0; this.airborne = false; this.airTime = 0; this.landImpact = 0;
-    this.slopePitch = 0; this.onDeck = false; this.inCut = false;
+    this.slopePitch = 0; this.slopeRoll = 0; this.onDeck = false; this.inCut = false;
     this._g = this._g || { h: 0, deck: false, inCut: false };
     this.vx = 0; this.vz = 0; this.vF = 0; this.vR = 0;
     this.yawRate = 0; this.steer = 0;
@@ -52,7 +52,7 @@ export class Vehicle {
     let vF = this.vx * fx + this.vz * fz;
     let vR = this.vx * rx + this.vz * rz;
     const surf = cw.surfaceAt(this.x, this.z);
-    const atGround = !this.onDeck && Math.abs(this.y) < 0.4;
+    const atGround = !this.onDeck && Math.abs(this.y - cw.groundAt(this.x, this.z)) < 0.4;
     const onGrass = atGround && !!(surf & SURF.GRASS) && !(surf & (SURF.ROAD | SURF.PAVED));
     if (this.airborne) { this.stepAir(dt, cw); return; }
     const gripMul = onGrass ? 0.72 : 1;
@@ -157,6 +157,12 @@ export class Vehicle {
     const hb = cw.groundHeight(this.x - fx * L, this.z - fz * L, this.y, gb);
     const target = Math.abs(hf - hb) < 2.5 ? Math.atan2(hf - hb, 2 * L) : 0;
     this.slopePitch += (target - this.slopePitch) * Math.min(1, 12 * dt);
+    // Lean with a cross-slope (visual only; kerbs and deck edges don't count).
+    const W = 0.8, gl = this._gl || (this._gl = {}), gr = this._gr || (this._gr = {});
+    const hr = cw.groundHeight(this.x - fz * W, this.z + fx * W, this.y, gr);
+    const hl = cw.groundHeight(this.x + fz * W, this.z - fx * W, this.y, gl);
+    const roll = Math.abs(hr - hl) < 0.5 ? Math.atan2(hr - hl, 2 * W) : 0;
+    this.slopeRoll += (roll - this.slopeRoll) * Math.min(1, 10 * dt);
   }
 
   stepAir(dt, cw) {

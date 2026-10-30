@@ -30,6 +30,7 @@ html, body {
   height: 100vh;
   display: block;
   outline: none;
+  touch-action: none;
 }
 
 .hidden { display: none !important; }
@@ -256,6 +257,7 @@ html, body {
 .menu-btn .desc { display: block; font-size: 13px; font-weight: 400; color: rgba(255, 255, 255, 0.7); margin-top: 3px; }
 .menu-btn.primary { background: var(--red); border-color: rgba(255, 255, 255, 0.3); }
 .menu-btn.back { background: transparent; font-size: 15px; color: var(--muted); }
+.line-dot { display: inline-block; width: 12px; height: 12px; border-radius: 50%; margin-right: 9px; vertical-align: 0; box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.35); }
 .medal { display: inline-block; width: 12px; height: 12px; border-radius: 50%; margin-left: 6px; vertical-align: -1px; }
 .medal.gold { background: #f4c542; }
 .medal.silver { background: #cfd6de; }

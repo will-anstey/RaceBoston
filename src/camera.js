@@ -5,6 +5,30 @@ import { clamp, damp, wrapAngle } from './util.js';
 
 export const CAMERA_MODES = ['Chase', 'Far chase', 'Hood', 'Overhead'];
 
+// Pointer drag to look around: yaw / pitch offsets (radians; drag up looks
+// up) that ease back once the pointer has been released for a moment.
+export class DragLook {
+  constructor(pitchMin = -1.15, pitchMax = 0.45) {
+    this.yaw = 0; this.pitch = 0; this.idle = 99; this.dragging = false;
+    this.min = pitchMin; this.max = pitchMax;
+  }
+  drag(dx, dy) {
+    this.yaw = wrapAngle(this.yaw + dx);
+    this.pitch = clamp(this.pitch - dy, this.min, this.max);
+    this.idle = 0;
+    this.dragging = true;
+  }
+  release() { this.dragging = false; }
+  reset() { this.yaw = 0; this.pitch = 0; this.idle = 99; this.dragging = false; }
+  update(dt) {
+    this.idle += dt;
+    if (this.dragging || this.idle < 1.5) return;
+    const k = damp(2.2, dt);
+    this.yaw -= this.yaw * k;
+    this.pitch -= this.pitch * k;
+  }
+}
+
 export class ChaseCamera {
   constructor(camera) {
     this.cam = camera;
@@ -17,7 +41,13 @@ export class ChaseCamera {
     this.target = new THREE.Vector3();
     this.lookBack = false;
     this._init = false;
+    // Drag to look: orbit around the car, or turn the driver's head in the hood view.
+    this.look = new DragLook();
   }
+
+  drag(dx, dy) { this.look.drag(dx, dy); }
+  release() { this.look.release(); }
+  resetLook() { this.look.reset(); }
 
   cycle() { this.mode = (this.mode + 1) % CAMERA_MODES.length; this._init = false; return CAMERA_MODES[this.mode]; }
   snap() { this._init = false; }
@@ -36,17 +66,21 @@ export class ChaseCamera {
     if (!this._init) this.heading = targetH;
     this.heading = wrapAngle(this.heading + wrapAngle(targetH - this.heading) * damp(this.mode === 2 ? 30 : 5.5, dt));
 
-    const fx = Math.sin(this.heading), fz = -Math.cos(this.heading);
+    const look = this.look;
+    look.update(dt);
+    const orbit = wrapAngle(this.heading + look.yaw);
+    const fx = Math.sin(orbit), fz = -Math.cos(orbit);
     const cfx = car.fx, cfz = car.fz;
     let px, py, pz, tx, ty, tz;
     const cy = car.y;
     // Underground (tunnel or deep cut): keep the camera under the ceiling.
-    const under = cy < -3;
+    const under = cy - cw.groundAt(car.x, car.z) < -3;
     if (this.mode === 2) {
-      // hood
+      // hood (drag turns the driver's head)
+      const lh = Math.atan2(cfx, -cfz) + look.yaw + (this.lookBack ? Math.PI : 0);
+      const lp = look.pitch * 0.6 - 0.01;
       px = car.x + cfx * 0.3; py = cy + 1.3; pz = car.z + cfz * 0.3;
-      tx = car.x + cfx * 30; ty = cy + 1.0; tz = car.z + cfz * 30;
-      if (this.lookBack) { tx = car.x - cfx * 30; tz = car.z - cfz * 30; }
+      tx = px + Math.sin(lh) * Math.cos(lp) * 30; ty = py + Math.sin(lp) * 30; tz = pz - Math.cos(lh) * Math.cos(lp) * 30;
     } else if (this.mode === 3 && !under) {
       const hgt = 70 + speed * 1.2;
       px = car.x - fx * hgt * 0.35; py = cy + hgt; pz = car.z - fz * hgt * 0.35;
@@ -63,9 +97,14 @@ export class ChaseCamera {
       if (!this._init) { this.dist = dist; this.height = height; }
       this.dist += (dist - this.dist) * damp(t < 1 ? 20 : 3, dt);
       this.height += (height - this.height) * damp(4, dt);
-      px = car.x - fx * this.dist; py = cy + this.height; pz = car.z - fz * this.dist;
+      // Dragging down swings the camera up over the car, dragging up lowers it to the road.
+      const r0 = Math.hypot(this.dist, this.height), a0 = Math.atan2(this.height, this.dist);
+      const a = clamp(a0 - look.pitch, 0.02, under ? Math.atan2(3.4, 2.2) : 1.35);
+      px = car.x - fx * r0 * Math.cos(a); py = cy + r0 * Math.sin(a); pz = car.z - fz * r0 * Math.cos(a);
       tx = car.x + fx * 3; ty = cy + 1.1; tz = car.z + fz * 3;
     }
+    // Never inside the hillside behind the car.
+    if (!under) py = Math.max(py, cw.groundAt(px, pz) + 1.2);
     if (!this._init) { this.pos.set(px, py, pz); this.target.set(tx, ty, tz); this._init = true; }
     const k = this.mode === 2 ? 1 : damp(14, dt);
     this.pos.x += (px - this.pos.x) * k; this.pos.y += (py - this.pos.y) * k; this.pos.z += (pz - this.pos.z) * k;

@@ -2,7 +2,7 @@
 # Race Boston launcher: fetches dependencies/data if missing, then serves the game.
 #
 #   ./run.sh            install deps if needed and start on http://localhost:8080
-#   ./run.sh --rebuild  re-download OpenStreetMap data and rebuild data/boston.json
+#   ./run.sh --rebuild  re-download OpenStreetMap data and rebuild data/boston.json + terrain.bin
 #   PORT=9000 ./run.sh  use a different port
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -20,6 +20,7 @@ done
 need_tools=0
 [ "${1:-}" = "--rebuild" ] && need_tools=1
 [ -f data/boston.json ] || need_tools=1
+[ -f data/terrain.bin ] || need_tools=1
 [ -f vendor/three/three.module.js ] || need_tools=1
 
 if [ "$need_tools" = 1 ]; then
@@ -33,9 +34,10 @@ if [ "$need_tools" = 1 ]; then
     cp node_modules/three/LICENSE vendor/three/LICENSE
     cp node_modules/earcut/src/earcut.js vendor/earcut.js
   fi
-  if [ "${1:-}" = "--rebuild" ] || [ ! -f data/boston.json ]; then
-    echo "Downloading OpenStreetMap data (a few minutes)..."
+  if [ "${1:-}" = "--rebuild" ] || [ ! -f data/boston.json ] || [ ! -f data/terrain.bin ]; then
+    echo "Downloading OpenStreetMap data and elevation tiles (a few minutes)..."
     "$NODE" tools/fetch-osm.mjs ${1:+--force}
+    "$NODE" tools/fetch-dem.mjs
     "$NODE" tools/build-map.mjs
   fi
 fi

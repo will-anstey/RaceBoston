@@ -1,5 +1,6 @@
 // End-to-end test: boots the game in headless Chrome and exercises driving,
-// collisions, water, traffic, a race, a taxi fare, the map and night mode.
+// collisions, water, hills, traffic, trains and train mode, a race, a taxi
+// fare, the map and night mode.
 //
 //   node tools/test-game.mjs            (screenshots -> tools/screenshots/)
 
@@ -146,7 +147,7 @@ try {
     const g = RB.game, cw = g.collision;
     // Any AI car at grade with a clear 20 m run-up straight behind it.
     for (const t of g.traffic.cars) {
-      if (t.wrecked || Math.abs(t.y) > 0.3) continue;
+      if (t.wrecked || Math.abs(t.y - g.map.terrain.h(t.x, t.z)) > 0.3) continue;
       const px = t.x - Math.sin(t.heading) * 20, pz = t.z + Math.cos(t.heading) * 20;
       if (cw.segmentBlocked(px, pz, t.x, t.z, 1) < 1 || cw.surfaceAt(px, pz) & 16) continue;
       if (g.traffic.cars.some((o) => o !== t && Math.hypot(o.x - px, o.z - pz) < 8)) continue;
@@ -268,7 +269,7 @@ try {
   // ---- sports car: 200 mph top speed, unchanged launch (physics on a flat stub world)
   const perf = await page.evaluate(async () => {
     const { Vehicle, HANDLING } = await import('/src/vehicle.js');
-    const flat = { surfaceAt: () => 2, groundHeight: (x, z, y, o) => { o.h = 0; o.deck = false; o.inCut = false; return 0; }, resolveCircle: () => false };
+    const flat = { surfaceAt: () => 2, groundAt: () => 0, groundHeight: (x, z, y, o) => { o.h = 0; o.deck = false; o.inCut = false; return 0; }, resolveCircle: () => false };
     const run = (id) => {
       const v = new Vehicle(HANDLING[id]);
       const inp = { throttle: 1, brake: 0, steer: 0, handbrake: false, boost: false };
@@ -281,33 +282,82 @@ try {
   check('sports car tops out at 200 mph', perf.coupe.top >= 199 && perf.coupe.top <= 203, `${perf.coupe.top.toFixed(1)} mph`);
   check('sports car keeps its launch (0-60 < 3.5 s)', perf.coupe.t60 < 3.5, `0-60 ${perf.coupe.t60.toFixed(2)} s (was 3.39 s); taxi ${perf.taxi.t60.toFixed(2)} s / ${perf.taxi.top.toFixed(0)} mph, SUV ${perf.suv.t60.toFixed(2)} s / ${perf.suv.top.toFixed(0)} mph`);
 
+  // ---- terrain: real hills, and the car follows them
+  const hills = await page.evaluate(() => {
+    const g = RB.game, T = g.map.terrain, lm = (n) => g.map.landmarks.find((l) => l.name === n);
+    const at = (n) => { const l = lm(n); return l ? +T.h(l.x, l.z).toFixed(1) : null; };
+    let top = { h: -1 };
+    for (let x = -4000; x < -2500; x += 20) for (let z = 2000; z < 3600; z += 20) { const h = T.h(x, z); if (h > top.h) top = { h, x, z }; }
+    // The inner harbor off Long Wharf: water, at sea level.
+    let sea = Infinity;
+    for (let x = 1200; x <= 2000; x += 40) for (let z = -1200; z <= -400; z += 40) sea = Math.min(sea, T.h(x, z));
+    return { mission: +top.h.toFixed(1), stateHouse: at('Massachusetts State House'), bunker: at('Bunker Hill Monument'), copley: at('Copley Square'), harbor: +sea.toFixed(1) };
+  });
+  check('terrain: Mission Hill, Beacon Hill and Bunker Hill rise above Back Bay', hills.mission > 40 && hills.stateHouse > 18 && hills.bunker > 18 && hills.copley < 8 && hills.harbor <= 0.5,
+    `Mission Hill ${hills.mission} m, State House ${hills.stateHouse} m, Bunker Hill ${hills.bunker} m, Copley ${hills.copley} m, harbor ${hills.harbor} m`);
+  // Up Joy Street from Cambridge Street to the State House (not Somerville's Joy Street).
+  await page.evaluate(() => RB.game.begin('free'));
+  const hill = await page.evaluate(async () => {
+    const g = RB.game, gr = g.graph, T = g.map.terrain;
+    let best = null;
+    const sh = g.map.landmarks.find((l) => l.name === 'Massachusetts State House');
+    for (const r of g.map.roads) {
+      if (r.name !== 'Joy Street' || Math.hypot(gr.nx(r.nodes[0]) - sh.x, gr.nz(r.nodes[0]) - sh.z) > 600) continue;
+      for (let i = 0; i + 1 < r.nodes.length; i++) {
+        const a = r.nodes[i], b = r.nodes[i + 1], ga = T.h(gr.nx(a), gr.nz(a)), gb = T.h(gr.nx(b), gr.nz(b));
+        if (!best || Math.min(ga, gb) < best.g) best = ga < gb ? { a, b, g: ga } : { a: b, b: a, g: gb };
+      }
+    }
+    if (!best) return null;
+    const { a, b } = best;
+    g.placeCar(gr.nx(a), gr.nz(a), Math.atan2(gr.nx(b) - gr.nx(a), -(gr.nz(b) - gr.nz(a))));
+    const y0 = g.car.y;
+    let minRel = Infinity, maxY = y0, air = 0;
+    g.inputOverride = { throttle: 0.7 };
+    for (let k = 0; k < 60; k++) {
+      await new Promise((r) => setTimeout(r, 100));
+      const c = g.car;
+      minRel = Math.min(minRel, c.y - T.h(c.x, c.z));
+      maxY = Math.max(maxY, c.y);
+      if (c.airborne) air++;
+    }
+    g.inputOverride = null;
+    return { y0, climbed: maxY - y0, minRel, air, speed: g.car.speed };
+  });
+  if (hill) check('drives up Beacon Hill (Joy Street) on the ground', hill.climbed > 3 && hill.minRel > -0.3 && hill.air < 5, `climbed ${hill.climbed.toFixed(1)} m from ${hill.y0.toFixed(1)} m, lowest ${hill.minRel.toFixed(2)} m vs the ground, ${hill.air} airborne samples, ${hill.speed.toFixed(1)} m/s`);
+  else check('drives up Beacon Hill (Joy Street) on the ground', false, 'Joy Street not found');
+  await shot('t05a_hill');
+
   // ---- 3D roads: ride the Harvard Bridge deck over the Charles, and the Pike tunnel
-  const onRoad = async (re, x, z, y) => page.evaluate((re, x, z, y) => {
-    const g = RB.game, gr = g.graph, ny = g.map.nodeY;
+  // Heights here are relative to the ground (rel): y = rel + terrain.
+  const onRoad = async (re, x, z, rel) => page.evaluate((re, x, z, rel) => {
+    const g = RB.game, gr = g.graph, ny = g.map.nodeY, nr = g.map.nodeRel;
     let best = null, bd = Infinity;
     for (const r of g.map.roads) {
       if (!new RegExp(re).test(r.name)) continue;
       for (let i = 0; i + 1 < r.nodes.length; i++) {
         const a = r.nodes[i], b = r.nodes[i + 1];
-        const d = (gr.nx(a) - x) ** 2 + (gr.nz(a) - z) ** 2 + ((ny[a] - y) * 30) ** 2;
+        const d = (gr.nx(a) - x) ** 2 + (gr.nz(a) - z) ** 2 + ((nr[a] - rel) * 30) ** 2;
         if (d < bd) { bd = d; best = [a, b, r]; }
       }
     }
     const [a, b, r] = best;
     let h = Math.atan2(gr.nx(b) - gr.nx(a), -(gr.nz(b) - gr.nz(a)));
     g.placeCar(gr.nx(a), gr.nz(a), h, ny[a]);
-    return { y: g.car.y, nodeY: ny[a], name: r.name };
-  }, re, x, z, y);
+    return { y: g.car.y, nodeY: ny[a], nodeRel: nr[a], name: r.name };
+  }, re, x, z, rel);
+  const relOf = (s) => page.evaluate((x, y, z) => y - RB.game.map.terrain.h(x, z), s.x, s.y, s.z);
   await page.evaluate(() => RB.game.begin('free'));
   let at = await onRoad('^Massachusetts Avenue$', -2100, 100, 3);
   await drive({ throttle: 0.5 });
   await sleep(2500);
   s = await st();
-  check('drives on the Harvard Bridge deck above the Charles', at.nodeY > 2 && s.y > 2 && s.onDeck && s.sinking === 0, `deck node y ${at.nodeY.toFixed(1)}, car y ${s.y.toFixed(1)}, splash=${s.sinking > 0}`);
+  let rel = await relOf(s);
+  check('drives on the Harvard Bridge deck above the Charles', at.nodeRel > 2 && rel > 2 && s.onDeck && s.sinking === 0, `deck node ${at.nodeRel.toFixed(1)} m up, car ${rel.toFixed(1)} m above the ground/water, splash=${s.sinking > 0}`);
   await shot('t05b_bridge_deck');
   // Climb onto the bridge from street level (not teleported onto the deck).
   const climb = await page.evaluate(() => {
-    const g = RB.game, gr = g.graph, ny = g.map.nodeY;
+    const g = RB.game, gr = g.graph, ny = g.map.nodeRel;
     // Walk Mass Ave north from an at-grade node in Back Bay until the deck starts.
     let start = -1, bd = Infinity;
     for (const r of g.map.roads) if (r.name === 'Massachusetts Avenue') for (const n of r.nodes) {
@@ -315,8 +365,8 @@ try {
       const d = (gr.nx(n) + 1940) ** 2 + (gr.nz(n) - 330) ** 2;
       if (d < bd) { bd = d; start = n; }
     }
-    let prev = -1, cur = start, path = [start];
-    for (let k = 0; k < 40; k++) {
+    let prev = -1, cur = start, path = [start], deck = 0;
+    for (let k = 0; k < 60; k++) {
       let best = -1, bz = Infinity;
       for (let e = gr.adjStart[cur]; e < gr.adjStart[cur + 1]; e++) {
         const ed = gr.adj[e], v = gr.eTo[ed];
@@ -325,10 +375,10 @@ try {
       }
       if (best < 0) break;
       prev = cur; cur = best; path.push(cur);
-      if (ny[cur] > 2.5) break;
+      if (ny[cur] > 2.5 && ++deck >= 6) break;   // a few nodes onto the deck, out over the river
     }
     const a = path[0], b = path[1];
-    g.placeCar(gr.nx(a), gr.nz(a), Math.atan2(gr.nx(b) - gr.nx(a), -(gr.nz(b) - gr.nz(a))), 0);
+    g.placeCar(gr.nx(a), gr.nz(a), Math.atan2(gr.nx(b) - gr.nx(a), -(gr.nz(b) - gr.nz(a))));
     window.__climb = path.map((n) => [gr.nx(n), gr.nz(n)]);
     return { n: path.length, top: ny[path[path.length - 1]] };
   });
@@ -343,20 +393,25 @@ try {
       let d = Math.atan2(T[0] - c.x, -(T[1] - c.z)) - c.heading;
       while (d > Math.PI) d -= 2 * Math.PI; while (d < -Math.PI) d += 2 * Math.PI;
       g.inputOverride = { throttle: c.speed < 15 ? 1 : 0, steer: Math.max(-1, Math.min(1, d * 2)) };
-      window.__maxY = Math.max(window.__maxY, c.y);
+      window.__maxY = Math.max(window.__maxY, c.y - g.map.terrain.h(c.x, c.z));
     }, 33);
   });
   await sleep(9000);
   const cl = await page.evaluate(() => { clearInterval(window.__ci); RB.game.inputOverride = null; return { maxY: window.__maxY, y: RB.game.car.y, deck: RB.game.car.onDeck, sink: RB.game.sinking }; });
-  check('climbs the Harvard Bridge from street level', cl.maxY > 2.5 && cl.sink === 0, `route to deck ${climb.top.toFixed(1)} m over ${climb.n} nodes; car reached ${cl.maxY.toFixed(1)} m, splash=${cl.sink > 0}`);
+  check('climbs the Harvard Bridge from street level', cl.maxY > 2.5 && cl.sink === 0, `route to deck ${climb.top.toFixed(1)} m over ${climb.n} nodes; car reached ${cl.maxY.toFixed(1)} m up, splash=${cl.sink > 0}`);
   at = await onRoad('^Massachusetts Turnpike$', -1100, 650, -11);
   await drive({ throttle: 0.5 });
   await sleep(2500);
   s = await st();
-  check('drives in the Mass Pike tunnel under Back Bay', at.nodeY < -5 && s.y < -5 && s.sinking === 0 && s.street === 'Massachusetts Turnpike', `node y ${at.nodeY.toFixed(1)}, car y ${s.y.toFixed(1)}, street "${s.street}"`);
+  rel = await relOf(s);
+  check('drives in the Mass Pike tunnel under Back Bay', at.nodeRel < -5 && rel < -5 && s.sinking === 0 && s.street === 'Massachusetts Turnpike', `node ${at.nodeRel.toFixed(1)} m, car ${rel.toFixed(1)} m below the ground, street "${s.street}"`);
   await shot('t05c_tunnel');
   await drive(null);
-  const extras = await page.evaluate(() => ({ posts: RB.game.signs.posts.length, lm: RB.game.world.landmarks.handled.size, props: RB.game.world.landmarks.props.children.length, field: !!RB.game.world.landmarks.field }));
+  const extras = await page.evaluate(() => {
+    let props = 0;
+    RB.game.world.landmarks.props.traverse((o) => { if (o.isMesh || o.isInstancedMesh) props++; });
+    return { posts: RB.game.signs.posts.length, lm: RB.game.world.landmarks.handled.size, props, field: !!RB.game.world.landmarks.field };
+  });
   check('street signs at intersections', extras.posts > 1500, `${extras.posts} sign posts`);
   check('landmarks dressed (Fenway etc.)', extras.lm > 40 && extras.props > 30 && extras.field, `${extras.lm} landmark parts, ${extras.props} props, Fenway field ${extras.field}`);
 
@@ -416,7 +471,7 @@ try {
     const g = RB.game, T = g.trains;
     // Park the car on the track ahead of a moving surface train: it must be pushed off, not overlap.
     // An at-grade train (one on a viaduct would just pass over the car).
-    const t = T.trains.find((q) => Math.abs(T._sample(q, q.head, {}).y) < 0.3 && Math.abs(T._sample(q, q.head - q.length, {}).y) < 0.3 && q.v > 3);
+    const t = T.trains.find((q) => Math.abs(T._relAt(T._sample(q, q.head, {}))) < 0.3 && Math.abs(T._relAt(T._sample(q, q.head - q.length, {}))) < 0.3 && q.v > 3);
     if (!t) return null;
     const p = T._sample(t, t.head + 2, {});
     g.placeCar(p.x, p.z, 0, p.y);
@@ -432,6 +487,99 @@ try {
   });
   if (block) check('trains are solid', block.gap > 0.4, `car-to-${block.svc} clearance ${block.gap.toFixed(2)} m`);
   else check('trains are solid', false, 'no surface train found');
+
+  // ---- the subway: tunnels, stations with platforms and name boards
+  const sub = await page.evaluate(() => {
+    const w = RB.game.world.rail, R = RB.game.map.railRel;
+    let under = 0;
+    for (let i = 0; i < R.length; i++) if (R[i] < -5.6) under++;
+    return { platforms: w.platforms.length, underPlat: w.platforms.filter((p) => p.underground).length, names: new Set(w.platforms.map((p) => p.name)).size, under, routes: RB.game.map.railRoutes.length };
+  });
+  check('subway tunnels and stations', sub.under > 4000 && sub.platforms > 100 && sub.underPlat > 40 && sub.names > 40 && sub.routes >= 16, `${sub.under} tunnel track nodes, ${sub.platforms} platforms (${sub.underPlat} underground) at ${sub.names} stations, ${sub.routes} drivable routes`);
+
+  // ---- drag to look around (car)
+  await page.evaluate(() => { RB.game.begin('free'); RB.game.respawn(); });
+  await sleep(500);
+  await page.mouse.move(640, 360);
+  await page.mouse.down();
+  for (let k = 1; k <= 8; k++) { await page.mouse.move(640 + k * 30, 360 - k * 6); await sleep(16); }
+  const dragCar = await page.evaluate(() => ({ yaw: RB.game.chase.look.yaw, pitch: RB.game.chase.look.pitch }));
+  await page.mouse.up();
+  await sleep(4200);
+  const backCar = await page.evaluate(() => RB.game.chase.look.yaw);
+  check('drag to look around the car (and it eases back)', dragCar.yaw > 0.8 && dragCar.pitch > 0.1 && Math.abs(backCar) < 0.15, `yaw ${dragCar.yaw.toFixed(2)} pitch ${dragCar.pitch.toFixed(2)} rad while dragging, ${backCar.toFixed(2)} rad 4 s after release`);
+
+  // ---- train mode: menu, drive the Red Line from Central to Kendall/MIT
+  await page.evaluate(() => { RB.game.toMenu(); RB.game.menu.show('lines'); });
+  await sleep(400);
+  const lineRows = await page.evaluate(() => document.querySelectorAll('#menu [data-act="train"]').length);
+  await shot('t17_train_lines');
+  const red = await page.evaluate(async () => {
+    const { trainLines } = await import('./src/trainmode.js');
+    const l = trainLines(RB.game.map).find((q) => q.ref === 'Red' && q.from === 'Central Square');
+    return l ? l.i : -1;
+  });
+  check('train lines menu', lineRows >= 16 && red >= 0, `${lineRows} lines listed`);
+  await page.evaluate((i) => RB.game.beginTrain(i), red);
+  await sleep(800);
+  s = await st();
+  check('train mode starts at the first station', s.state === 'train' && s.train && s.train.phase === 'boarding' && s.train.v === 0, `state ${s.state}, phase ${s.train && s.train.phase}`);
+  // Autopilot (each physics step): run at the limit and brake for the stopping mark.
+  await page.evaluate(() => {
+    RB.game.trainMode.autopilot = (r) => {
+      const t = r.train, st = r.stops[r.next];
+      let throttle = 0, brake = 0, handbrake = false;
+      if (r.phase === 'running') {
+        const d = st ? st.s - t.head : 1e9, need = d > 0.3 ? (t.v * t.v) / (2 * (d - 0.3)) : 9;
+        const aheadNeed = r.ahead ? (t.v * t.v - r.ahead.v * r.ahead.v) / (2 * Math.max(1, r.ahead.d - 15)) : 0;
+        if (need > 0.8 || aheadNeed > 0.75) brake = Math.min(1, Math.max(need, aheadNeed) / 1.3 + 0.05);
+        else if (t.v > r.limit - 0.4) brake = 0.25;
+        else if (t.v < r.limit - 1.3) throttle = 1;
+        if (d < 1.5 && t.v < 0.6) brake = 1;
+        handbrake = need > 1.15;
+      }
+      return { throttle, brake, handbrake };
+    };
+  });
+  let deepest = 0, camUnder = false, sawAI = 0;
+  const tStart = Date.now();
+  await page.evaluate(() => RB.game.setSetting('trains', 3));
+  while (Date.now() - tStart < 180000) {
+    await sleep(1000);
+    s = await st();
+    if (!s.train) break;
+    deepest = Math.min(deepest, s.train.rel);
+    const v = await page.evaluate(() => {
+      const g = RB.game, c = g.camera.position, T = g.map.terrain, tr = g.trains;
+      const ai = tr.trains.filter((t) => tr._relAt(tr._sample(t, t.head, {})) < -5).length;
+      return { camUnder: c.y < T.h(c.x, c.z) - 3, ai };
+    });
+    if (v.camUnder) camUnder = true;
+    sawAI = Math.max(sawAI, v.ai);
+    if (s.train.results.length) break;
+  }
+  const leg = s.train && s.train.results[0];
+  check('drives the Red Line underground to Kendall/MIT and stops at the platform', !!leg && !leg.missed && Math.abs(leg.d) < 4 && deepest < -5 && camUnder, leg ? `${leg.name}: stopped ${leg.d.toFixed(1)} m from the mark, deepest ${deepest.toFixed(1)} m below ground, cab camera underground ${camUnder}` : `no stop after ${((Date.now() - tStart) / 1000).toFixed(0)} s`);
+  check('AI trains run in the tunnels in train mode', sawAI > 0, `${sawAI} AI trains underground`);
+  await sleep(1500);
+  await shot('t18_train_station');
+  s = await st();
+  check('doors open at the station', s.train && s.train.phase === 'boarding', `phase ${s.train && s.train.phase}`);
+  // Drag to look around from the cab.
+  await page.mouse.move(640, 360);
+  await page.mouse.down();
+  for (let k = 1; k <= 8; k++) { await page.mouse.move(640 - k * 35, 360); await sleep(16); }
+  const dragTrain = await page.evaluate(() => RB.game.trainMode.camera.look.yaw);
+  await shot('t19_train_look');
+  await page.mouse.up();
+  check('drag to look around from the train cab', dragTrain < -0.8, `yaw ${dragTrain.toFixed(2)} rad`);
+  await page.keyboard.press('KeyC');
+  await sleep(1200);
+  await shot('t20_train_chase');
+  await page.evaluate(() => { RB.game.trainMode.autopilot = null; RB.game.setSetting('trains', 2); RB.game.begin('free'); RB.game.respawn(); });
+  await sleep(500);
+  s = await st();
+  check('leaving train mode returns to the car', s.state === 'play' && !s.train, `state ${s.state}`);
 
   // ---- Logan: parked aircraft, arrivals landing, departures taking off (Max density)
   await page.evaluate(() => { RB.game.setSetting('planes', 4); });

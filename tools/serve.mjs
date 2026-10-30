@@ -3,7 +3,7 @@
 //   node tools/serve.mjs [port]
 //
 // Any static server works (e.g. `python3 -m http.server 8080`); this one just
-// compresses the 11 MB map file so it loads faster.
+// compresses the 11 MB map and 3 MB terrain files so they load faster.
 
 import http from 'node:http';
 import fs from 'node:fs';
@@ -29,7 +29,7 @@ const server = http.createServer((req, res) => {
     if (err || !st.isFile()) { res.writeHead(404, { 'Content-Type': 'text/plain' }).end('Not found'); return; }
     const ext = path.extname(file).toLowerCase();
     const headers = { 'Content-Type': TYPES[ext] || 'application/octet-stream', 'Cache-Control': 'no-cache' };
-    const canGzip = /gzip/.test(req.headers['accept-encoding'] || '') && ['.json', '.js', '.css', '.html'].includes(ext);
+    const canGzip = /gzip/.test(req.headers['accept-encoding'] || '') && ['.json', '.js', '.css', '.html', '.bin'].includes(ext);
     if (canGzip) {
       const key = file + ':' + st.mtimeMs;
       let body = gzCache.get(key);

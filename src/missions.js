@@ -234,7 +234,7 @@ export class Missions {
     // An ordinary street at ground level: not in a tunnel or on a deck, and
     // not a highway or ramp (Storrow Drive under the bridges) that the GPS
     // could only reach by a long loop.
-    const ok = (k) => Math.abs(this.g.map.nodeY[k]) < 0.5 && g.nodeClass[k] > RC.TRUNK;
+    const ok = (k) => Math.abs(this.g.map.nodeRel[k]) < 0.5 && g.nodeClass[k] > RC.TRUNK;
     if (n < 0 || !g.inSCC[n] || !ok(n)) n = g.nearestNode(l.x, l.z, RC.LIVING, 400, true, ok);
     return { x: g.nx(n), z: g.nz(n), y: this.g.map.nodeY[n], node: n, name };
   }
@@ -312,7 +312,7 @@ export class Missions {
     }
     for (let k = 0; k < 60; k++) {
       const a = rnd() * Math.PI * 2, d = minD + rnd() * (maxD - minD);
-      const n = g.nearestNode(fromX + Math.sin(a) * d, fromZ - Math.cos(a) * d, RC.RESIDENTIAL, 200, true, (k) => Math.abs(map.nodeY[k]) < 0.5);
+      const n = g.nearestNode(fromX + Math.sin(a) * d, fromZ - Math.cos(a) * d, RC.RESIDENTIAL, 200, true, (k) => Math.abs(map.nodeRel[k]) < 0.5);
       if (n < 0) continue;
       const x = g.nx(n), z = g.nz(n);
       const dd = Math.hypot(x - fromX, z - fromZ);

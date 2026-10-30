@@ -19,6 +19,7 @@ export class CollisionWorld {
     const b = map.meta.play;
     const st = world.structures || { walls: [], surfaces: [], pillars: [], footprints: [] };
     this.bounds = b;
+    this.terrain = map.terrain;
     this.walls = new SegmentGrid(b, 10);
     for (const bd of map.buildings) {
       if (!bd.solid) continue;
@@ -26,12 +27,16 @@ export class CollisionWorld {
         const n = r.length / 2;
         for (let i = 0; i < n; i++) {
           const j = (i + 1) % n;
-          this.walls.add(r[2 * i], r[2 * i + 1], r[2 * j], r[2 * j + 1], 0, 0, bd.minH - 0.2, bd.h);
+          this.walls.add(r[2 * i], r[2 * i + 1], r[2 * j], r[2 * j + 1], 0, 0, bd.base + bd.minH - 0.2, bd.base + bd.h);
         }
       }
     }
     for (const [ax, az, bx, bz, y0, y1, kind] of st.walls) this.walls.add(ax, az, bx, bz, kind, 0, y0, y1);
     this.walls.build();
+    // Subway tunnel walls: only for cameras (no car gets into a rail tunnel).
+    this.railWalls = new SegmentGrid(b, 10);
+    for (const [ax, az, bx, bz, y0, y1, kind] of (world.rail && world.rail.tunnelWalls) || []) this.railWalls.add(ax, az, bx, bz, kind, 0, y0, y1);
+    this.railWalls.build();
 
     this.trees = new PointGrid(b, 10);
     for (let i = 0; i < map.trees.length; i += 2) this.trees.add(map.trees[i], map.trees[i + 1], 0.32);
@@ -63,13 +68,13 @@ export class CollisionWorld {
       for (const w of A.ways) s.line(P(w.nodes), w.kind === 2 ? 26 : w.kind >= 3 ? 30 : w.width / 2, SURF.PAVED);
     }
     for (const p of map.paths) s.line(p.pts, p.width / 2 + 0.3, SURF.PAVED);
-    const nodes = map.nodes, ny = map.nodeY;
+    const nodes = map.nodes, nr = map.nodeRel;
     // Only at-grade road segments count as "road" at ground level.
     for (const r of map.roads) {
       const w = r.width / 2 + (hasSidewalk(r) ? SIDEWALK_W : 0.6);
       for (let i = 0; i + 1 < r.nodes.length; i++) {
         const a = r.nodes[i], c = r.nodes[i + 1];
-        if (segCategory(r, ny[a], ny[c]) !== 'flat') continue;
+        if (segCategory(r, nr[a], nr[c]) !== 'flat') continue;
         s.line([nodes[2 * a], nodes[2 * a + 1], nodes[2 * c], nodes[2 * c + 1]], w, SURF.ROAD);
       }
     }
@@ -81,9 +86,13 @@ export class CollisionWorld {
 
   surfaceAt(x, z) { return this.surface.get(x, z); }
 
-  // Water only counts at ground level (not on decks, in cuts or in tunnels).
+  // Ground (terrain) height; over water this is the water surface.
+  groundAt(x, z) { return this.terrain.h(x, z); }
+
+  // Water only counts at its surface (not on decks, in cuts or in tunnels).
   isWater(x, z, y = 0, onDeck = false) {
-    if (onDeck || y > 0.6 || y < -0.6) return false;
+    const dy = y - this.terrain.h(x, z);
+    if (onDeck || dy > 0.6 || dy < -0.6) return false;
     const v = this.surface.get(x, z);
     return (v & SURF.WATER) && !(v & (SURF.ROAD | SURF.PAVED | SURF.CUT)) ? true : false;
   }
@@ -128,18 +137,19 @@ export class CollisionWorld {
     }
     // A cut's footprint can bleed onto an at-grade street beside it; streets keep their ground.
     const bits = this.surface.get(x, z);
-    const inCut = !!(bits & SURF.CUT) && !((bits & SURF.ROAD) && y > -0.6);
-    if (!inCut && 0 <= y + STEP_UP) {
-      const gap = Math.abs(y);
+    const gh = this.terrain.h(x, z);
+    const inCut = !!(bits & SURF.CUT) && !((bits & SURF.ROAD) && y > gh - 0.6);
+    if (!inCut && gh <= y + STEP_UP) {
+      const gap = Math.abs(y - gh);
       const score = bits & SURF.ROAD ? 0.85 : 1.15;
-      if (gap < 0.6 && score < lvScore) { lvScore = score; lvH = 0; lvDeck = false; }
-      if (gap < anyGap) { anyGap = gap; anyH = 0; anyDeck = false; }
+      if (gap < 0.6 && score < lvScore) { lvScore = score; lvH = gh; lvDeck = false; }
+      if (gap < anyGap) { anyGap = gap; anyH = gh; anyDeck = false; }
     }
     let h, deck;
     if (!Number.isNaN(lvH)) { h = lvH; deck = lvDeck; }
     else if (!Number.isNaN(anyH)) { h = anyH; deck = anyDeck; }
     else if (Number.isFinite(nearH)) { h = nearH; deck = true; } // in a cut, beside the road strip
-    else { h = inCut ? y : 0; deck = false; }
+    else { h = inCut ? y : gh; deck = false; }
     out.h = h; out.deck = deck; out.inCut = inCut;
     return h;
   }
@@ -168,7 +178,8 @@ export class CollisionWorld {
       }
     }
     // Trees and pillars stand on the ground.
-    if (y > -1 && y < 2.5 && !(this.surface.get(x, z) & SURF.CUT)) {
+    const above = y - this.terrain.h(x, z);
+    if (above > -1 && above < 2.5 && !(this.surface.get(x, z) & SURF.CUT)) {
       const T = this.trees;
       const m = T.query(x, z, r + 1);
       for (let k = 0; k < m; k++) {
@@ -195,16 +206,18 @@ export class CollisionWorld {
   }
 
   // Fraction t along a->b (2D) where it first crosses a wall spanning height y.
-  segmentBlocked(ax, az, bx, bz, y = 1.5) {
-    const W = this.walls, s = W.segs;
-    const mx = (ax + bx) / 2, mz = (az + bz) / 2;
-    const n = W.query(mx, mz, Math.hypot(bx - ax, bz - az) / 2 + 1);
+  // Fraction of a->b that is clear of walls at height y (rail: subway tunnel walls too).
+  segmentBlocked(ax, az, bx, bz, y = 1.5, rail = false) {
     let tBest = 1;
-    for (let k = 0; k < n; k++) {
-      const i = W.result[k];
-      if (W.y1[i] < y - 0.5 || W.y0[i] > y + 0.5) continue;
-      const t = segIntersect(ax, az, bx, bz, s[4 * i], s[4 * i + 1], s[4 * i + 2], s[4 * i + 3]);
-      if (t >= 0 && t < tBest) tBest = t;
+    for (const W of rail ? [this.walls, this.railWalls] : [this.walls]) {
+      const s = W.segs;
+      const n = W.query((ax + bx) / 2, (az + bz) / 2, Math.hypot(bx - ax, bz - az) / 2 + 1);
+      for (let k = 0; k < n; k++) {
+        const i = W.result[k];
+        if (W.y1[i] < y - 0.5 || W.y0[i] > y + 0.5) continue;
+        const t = segIntersect(ax, az, bx, bz, s[4 * i], s[4 * i + 1], s[4 * i + 2], s[4 * i + 3]);
+        if (t >= 0 && t < tBest) tBest = t;
+      }
     }
     return tBest;
   }

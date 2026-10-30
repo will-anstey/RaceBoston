@@ -225,9 +225,10 @@ export class RoadGraph {
   }
 
   // Is (x, z) within `margin` of the carriageway of any road lower than
-  // maxY? Every level counts, so a deck can't hide the street under it.
+  // maxY above the ground? Every level counts, so a deck can't hide the
+  // street under it.
   roadBelow(x, z, maxY, margin = 0) {
-    const g = this.segGrid, s = g.segs, ny = this.map.nodeY, roads = this.map.roads;
+    const g = this.segGrid, s = g.segs, ny = this.map.nodeRel, roads = this.map.roads;
     const n = g.query(x, z, 24 + margin);
     for (let k = 0; k < n; k++) {
       const i = g.result[k];
@@ -238,6 +239,25 @@ export class RoadGraph {
       if (Math.hypot(x - ax - dx * t, z - az - dz * t) > road.width / 2 + margin) continue;
       const seg = g.meta2[i];
       if (ny[road.nodes[seg]] + (ny[road.nodes[seg + 1]] - ny[road.nodes[seg]]) * t < maxY) return true;
+    }
+    return false;
+  }
+
+  // Is there road surface at (x, z) (within its half width + margin) at a
+  // height between lo and hi relative to the ground?
+  roadNear(x, z, lo, hi, margin = 0) {
+    const g = this.segGrid, s = g.segs, ny = this.map.nodeRel, roads = this.map.roads;
+    const n = g.query(x, z, 24 + margin);
+    for (let k = 0; k < n; k++) {
+      const i = g.result[k];
+      const road = roads[g.meta[i]];
+      const ax = s[4 * i], az = s[4 * i + 1], bx = s[4 * i + 2], bz = s[4 * i + 3];
+      const dx = bx - ax, dz = bz - az, l2 = dx * dx + dz * dz || 1e-9;
+      const t = Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / l2));
+      if (Math.hypot(x - ax - dx * t, z - az - dz * t) > road.width / 2 + margin) continue;
+      const seg = g.meta2[i];
+      const y = ny[road.nodes[seg]] + (ny[road.nodes[seg + 1]] - ny[road.nodes[seg]]) * t;
+      if (y > lo && y < hi) return true;
     }
     return false;
   }

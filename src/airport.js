@@ -87,7 +87,8 @@ class LightBuf {
 }
 
 // ------------------------------------------------------------- geometry
-export function buildAirport(map, add, mats) {
+// drape(geometry) lays a flat layer (y = lift) on the terrain.
+export function buildAirport(map, add, mats, drape = (g) => g) {
   const A = map.aero;
   if (!A) return null;
   const pts = (nodes) => {
@@ -102,8 +103,8 @@ export function buildAirport(map, add, mats) {
   const pave = new GeoBuilder({ color: [Uint8Array, 3, true] });
   const paveCol = () => pave.attrs.color.buf.p3(APRON_RGB[0], APRON_RGB[1], APRON_RGB[2]);
   for (const w of A.ways) {
-    if (w.kind === AERO.TAXILANE) ribbon(pave, pts(w.nodes), 26, 0, paveCol);
-    else if (w.kind === AERO.LEADIN || w.kind === AERO.CONNECTOR) ribbon(pave, pts(w.nodes), 30, 0, paveCol);
+    if (w.kind === AERO.TAXILANE) ribbon(pave, pts(w.nodes), 26, 0.04, paveCol);
+    else if (w.kind === AERO.LEADIN || w.kind === AERO.CONNECTOR) ribbon(pave, pts(w.nodes), 30, 0.04, paveCol);
   }
   for (const st of A.stands) {
     // Pad around the stand end for the parked aircraft's wings and tail.
@@ -112,21 +113,21 @@ export function buildAirport(map, add, mats) {
     const ring = [];
     for (let k = 0; k < 16; k++) { const a = (k / 16) * Math.PI * 2; ring.push(ex + Math.cos(a) * 34, ez + Math.sin(a) * 34); }
     const base = pave.vcount;
-    for (let k = 0; k < 16; k++) { pave.pos.p3(ring[2 * k], 0, ring[2 * k + 1]); paveCol(); }
+    for (let k = 0; k < 16; k++) { pave.pos.p3(ring[2 * k], 0.04, ring[2 * k + 1]); paveCol(); }
     for (let k = 1; k < 15; k++) pave.idx.p3(base, base + k + 1, base + k);
   }
   const pg = pave.build();
-  if (pg) add(meshOf(pg, mats.ground, -44));
+  if (pg) add(meshOf(drape(pg), mats.ground, -44));
 
   // Taxiways and taxilanes.
   const tw = new GeoBuilder({ aUV: [Float32Array, 2, false], aTwy: [Float32Array, 2, false] });
   for (const w of A.ways) {
     if (w.kind !== AERO.TAXIWAY && w.kind !== AERO.TAXILANE) continue;
     const hw = w.width / 2, edges = w.kind === AERO.TAXIWAY ? 1 : 0;
-    ribbon(tw, pts(w.nodes), hw, 0, (u, s, seg, tb) => { tb.attrs.aUV.buf.p2(u, s); tb.attrs.aTwy.buf.p2(hw, edges); });
+    ribbon(tw, pts(w.nodes), hw, 0.06, (u, s, seg, tb) => { tb.attrs.aUV.buf.p2(u, s); tb.attrs.aTwy.buf.p2(hw, edges); });
   }
   const tg = tw.build();
-  if (tg) add(meshOf(tg, mats.taxiway, -29.6));
+  if (tg) add(meshOf(drape(tg), mats.taxiway, -29.6));
 
   // Runways (with paved shoulders).
   const rw = new GeoBuilder({ aUV: [Float32Array, 2, false], aRwy: [Float32Array, 2, false] });
@@ -135,25 +136,26 @@ export function buildAirport(map, add, mats) {
     let L = 0;
     for (let i = 1; i < r.nodes.length; i++) L += Math.hypot(p[2 * i] - p[2 * i - 2], p[2 * i + 1] - p[2 * i - 1]);
     const hw = r.width / 2;
-    ribbon(rw, p, hw + 7.5, 0, (u, s, seg, tb) => { tb.attrs.aUV.buf.p2(u, s); tb.attrs.aRwy.buf.p2(hw, L); });
+    ribbon(rw, p, hw + 7.5, 0.07, (u, s, seg, tb) => { tb.attrs.aUV.buf.p2(u, s); tb.attrs.aRwy.buf.p2(hw, L); });
     return { ...r, pts: p, length: L };
   });
   const rg = rw.build();
-  if (rg) add(meshOf(rg, mats.runway, -29.4));
+  if (rg) add(meshOf(drape(rg), mats.runway, -29.4));
 
   // Yellow stand lead-in lines and hold-short bars.
   const paint = new GeoBuilder({ color: [Uint8Array, 3, true] });
   const yel = () => paint.attrs.color.buf.p3(YELLOW_RGB[0], YELLOW_RGB[1], YELLOW_RGB[2]);
-  for (const st of A.stands) ribbon(paint, pts(st.nodes), 0.12, 0, yel);
+  for (const st of A.stands) ribbon(paint, pts(st.nodes), 0.12, 0.09, yel);
   addHoldBars(A, runways, paint, yel);
   const ptg = paint.build();
-  if (ptg) add(meshOf(ptg, mats.ground, -29.2));
+  if (ptg) add(meshOf(drape(ptg), mats.ground, -29.2));
 
   // Runway designation numbers at both ends.
-  addDesignations(runways, add);
+  addDesignations(runways, add, drape);
 
-  // Airfield lighting.
-  const lights = new LightBuf();
+  // Airfield lighting, standing on the ground (or the water off the runway ends).
+  const lightBuf = new LightBuf();
+  const lights = { add: (x, y, z, ...rest) => lightBuf.add(x, map.terrain.h(x, z) + y, z, ...rest) };
   const lightMat = makeLightMaterial(0.1);
   for (const r of runways) {
     const { ox, oz, s, n } = polyOffsets(r.pts);
@@ -205,9 +207,9 @@ export function buildAirport(map, add, mats) {
       }
     }
   }
-  const lp = lights.points(lightMat);
+  const lp = lightBuf.points(lightMat);
   add(lp);
-  return { runways, lightMat, lights: lp, count: lights.s.length };
+  return { runways, lightMat, lights: lp, count: lightBuf.s.length };
 }
 
 function addHoldBars(A, runways, b, col) {
@@ -222,7 +224,7 @@ function addHoldBars(A, runways, b, col) {
     }
   }
   const rwyPts = runways.flatMap((r) => Array.from(r.nodes, (n) => [A.nodes[2 * n], A.nodes[2 * n + 1]]));
-  const quad = (pts) => { const base = b.vcount; for (const [x, z] of pts) { b.pos.p3(x, 0, z); col(); } b.idx.p3(base, base + 2, base + 1); b.idx.p3(base, base + 3, base + 2); };
+  const quad = (pts) => { const base = b.vcount; for (const [x, z] of pts) { b.pos.p3(x, 0.09, z); col(); } b.idx.p3(base, base + 2, base + 1); b.idx.p3(base, base + 3, base + 2); };
   for (const h of A.holds) {
     const d = dir.get(h);
     if (!d) continue;
@@ -246,7 +248,7 @@ function addHoldBars(A, runways, b, col) {
   }
 }
 
-function addDesignations(runways, add) {
+function addDesignations(runways, add, drape) {
   const names = [...new Set(runways.flatMap((r) => r.ends))];
   const cell = 128, cols = 4, rows = Math.ceil(names.length / cols);
   const c = document.createElement('canvas');
@@ -291,7 +293,7 @@ function addDesignations(runways, add) {
       const fx = (ax - ex) / l, fz = (az - ez) / l;   // toward the runway (away from this end)
       const rx = -fz, rz = fx;                         // pilot's right... (left-handed in x/z)
       const d0 = 60, d1 = 60 + 22, w = 9;
-      const P = (d, a) => [ex + fx * d + rx * a, 0.02, ez + fz * d + rz * a];
+      const P = (d, a) => [ex + fx * d + rx * a, 0.11, ez + fz * d + rz * a];
       const base = b.vcount;
       for (const p of [P(d0, -w), P(d0, w), P(d1, w), P(d1, -w)]) b.pos.p3(p[0], p[1], p[2]);
       // Bottom of the text toward the threshold, reading left-to-right for the pilot.
@@ -301,7 +303,6 @@ function addDesignations(runways, add) {
   }
   const g = b.build();
   if (g) {
-    g.setAttribute('normal', new THREE.Float32BufferAttribute(new Float32Array(g.attributes.position.count * 3).map((_, k) => (k % 3 === 1 ? 1 : 0)), 3));
-    add(meshOf(g, mat, -29.0));
+    add(meshOf(drape(g), mat, -29.0));
   }
 }

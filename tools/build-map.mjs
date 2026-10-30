@@ -13,10 +13,13 @@ import { PLAY_BBOX, WATER_BBOX, ORIGIN } from './config.mjs';
 import * as G from './geo.mjs';
 import { solveElevations, ROAD_FLAGS } from './elevation.mjs';
 import { buildAero } from './aero.mjs';
+import { buildTerrain, encodeTerrain } from './terrain.mjs';
+import { encodePNG } from './png.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const cacheDir = path.join(here, '.cache');
 const outFile = path.join(here, '..', 'data', 'boston.json');
+const terrainFile = path.join(here, '..', 'data', 'terrain.bin');
 
 function load(name) {
   const f = path.join(cacheDir, name + '.json');
@@ -34,6 +37,7 @@ const M_LON = 111412.84 * Math.cos(phi) - 93.5 * Math.cos(3 * phi) + 0.118 * Mat
 const px = (lon) => (lon - ORIGIN.lon) * M_LON;
 const pz = (lat) => -(lat - ORIGIN.lat) * M_LAT;
 const proj = (g) => [px(g.lon), pz(g.lat)];
+const unproj = (x, z) => [ORIGIN.lon + x / M_LON, ORIGIN.lat - z / M_LAT];
 const toBox = (b) => ({ minX: px(b.west), maxX: px(b.east), minZ: pz(b.north), maxZ: pz(b.south) });
 const PLAY = toBox(PLAY_BBOX);
 const WBOX = toBox(WATER_BBOX);
@@ -742,8 +746,15 @@ function railServices(transit) {
 
 // Rail network: nodes (OSM nodes + 10 m densified points), ways with service
 // masks, and node flags for tunnel portals, stops, buffer stops and map edges.
+// Tunnels are included (the whole subway); PORTAL marks where they meet
+// surface track.
 export const RAIL_NODE = { PORTAL: 1, STOP: 2, BUFFER: 4, EDGE: 8 };
-export const RAIL_WAY = { BRIDGE: 1, YARD: 2, CROSSOVER: 4 };
+export const RAIL_WAY = { BRIDGE: 1, YARD: 2, CROSSOVER: 4, TUNNEL: 8 };
+const parseSpeed = (v) => {
+  const m = /^\s*([\d.]+)\s*(mph)?/.exec(v || '');
+  if (!m) return 0;
+  return parseFloat(m[1]) * (m[2] ? 0.44704 : 1 / 3.6);
+};
 function buildRail(els, transit) {
   const svcMap = railServices(transit);
   const stopIds = new Set(), bufferIds = new Set();
@@ -754,7 +765,7 @@ function buildRail(els, transit) {
     else if (/^(stop|station|halt|tram_stop)$/.test(t.railway || '') || t.public_transport === 'stop_position') stopIds.add(e.id);
   }
   const nodeIndex = new Map(), nodes = [], osmId = [], ways = [];
-  const tunnelNodes = new Set();
+  const tunnelNodes = new Set(), surfaceNodes = new Set();
   const nodeOf = (id, g) => {
     let i = nodeIndex.get(id);
     if (i === undefined) { i = nodes.length / 2; nodeIndex.set(id, i); nodes.push(r1(px(g.lon)), r1(pz(g.lat))); osmId.push(id); }
@@ -763,7 +774,8 @@ function buildRail(els, transit) {
   for (const el of els) {
     const t = el.tags || {};
     if (!el.geometry || !el.nodes) continue;
-    if (isTunnel(t)) { for (const id of el.nodes) tunnelNodes.add(id); continue; }
+    const tunnel = isTunnel(t);
+    for (const id of el.nodes) (tunnel ? tunnelNodes : surfaceNodes).add(id);
     const kind = t.railway === 'rail' ? 0 : t.railway === 'subway' ? 1 : 2;
     let svc = svcMap.get(el.id) || 0;
     if (!svc) {
@@ -774,11 +786,13 @@ function buildRail(els, transit) {
       else if (/Green Line/.test(nm)) svc = RAIL_SVC.GREEN;
       else if (/Grand Junction/.test(nm)) svc = RAIL_SVC.FREIGHT;
     }
-    const flags = (isBridge(t) ? RAIL_WAY.BRIDGE : 0) | (/yard|siding|spur/.test(t.service || '') ? RAIL_WAY.YARD : 0) | (t.service === 'crossover' ? RAIL_WAY.CROSSOVER : 0);
+    const flags = (isBridge(t) ? RAIL_WAY.BRIDGE : 0) | (/yard|siding|spur/.test(t.service || '') ? RAIL_WAY.YARD : 0) | (t.service === 'crossover' ? RAIL_WAY.CROSSOVER : 0) | (tunnel ? RAIL_WAY.TUNNEL : 0);
+    const speed = parseSpeed(t.maxspeed);
     // Split into runs inside the padded play area; densify every 10 m.
     const g = el.geometry;
     let run = null;
-    const flush = () => { if (run && run.length >= 2) ways.push({ kind, flags, svc, nodes: run }); run = null; };
+    const layer = tunnel ? Math.min(-1, layerOf(t)) : 0;
+    const flush = () => { if (run && run.length >= 2) ways.push({ kind, flags, svc, speed, layer, osm: el.id, nodes: run }); run = null; };
     for (let i = 0; i < g.length; i++) {
       const p = proj(g[i]);
       const inside = inBox(PLAY_M, p[0], p[1]);
@@ -809,54 +823,501 @@ function buildRail(els, transit) {
   for (const w of ways) for (let i = 0; i < w.nodes.length; i++) deg[w.nodes[i]] += i === 0 || i === w.nodes.length - 1 ? 1 : 2;
   for (let i = 0; i < N; i++) {
     const id = osmId[i];
-    if (id >= 0 && tunnelNodes.has(id)) flags[i] |= RAIL_NODE.PORTAL;
+    if (id >= 0 && tunnelNodes.has(id) && surfaceNodes.has(id)) flags[i] |= RAIL_NODE.PORTAL;
     if (id >= 0 && stopIds.has(id)) flags[i] |= RAIL_NODE.STOP;
     if (id >= 0 && bufferIds.has(id)) flags[i] |= RAIL_NODE.BUFFER;
     const x = nodes[2 * i], z = nodes[2 * i + 1];
     if (deg[i] === 1 && !(flags[i] & RAIL_NODE.PORTAL) && !inBox(grow(PLAY, -60), x, z)) flags[i] |= RAIL_NODE.EDGE;
   }
   log(`rail: ${ways.length} ways, ${N} nodes, ${[...flags].filter((f) => f & RAIL_NODE.PORTAL).length} portals, ${[...flags].filter((f) => f & RAIL_NODE.STOP).length} stops, ${[...flags].filter((f) => f & RAIL_NODE.BUFFER).length} buffers`);
-  return { nodes, ways, flags };
+  return { nodes, ways, flags, nodeIndex };
 }
 
-// Rail heights: bridge chains ramp up from where they meet at-grade track
-// (or a tunnel portal) to a deck that clears what they cross.
-function railElevations(rail, deckAt) {
+// Line routes from the OSM route relations: the ordered track (our rail
+// nodes) of each line and direction inside the map, with its named stops.
+const ROUTE_REF = /^(Red|Orange|Blue|Green-[BCDE]|CR-[A-Za-z]+)$/;
+// Station name from a stop or platform name: "Amory Street - Park St &
+// North" -> Amory Street, "Boston South Station" -> South Station.
+const stationName = (name) => (name || '').split(/ - | \(/)[0].trim().replace(/^Boston (North Station|South Station|Back Bay)$/, '$1');
+
+function buildRailRoutes(transit, rail) {
+  const runsByOsm = new Map();
+  for (const w of rail.ways) { if (!runsByOsm.has(w.osm)) runsByOsm.set(w.osm, []); runsByOsm.get(w.osm).push(w.nodes); }
+  const stopName = new Map();
+  for (const e of transit) if (e.type === 'node' && e.tags && e.tags.name) stopName.set(e.id, stationName(e.tags.name));
+  const best = new Map();
+  for (const r of transit) {
+    if (r.type !== 'relation') continue;
+    const t = r.tags || {};
+    if (!/^(subway|light_rail|train)$/.test(t.route) || !ROUTE_REF.test(t.ref || '')) continue;
+    // Chain the member ways in order into continuous pieces of track.
+    const chunks = [];
+    let path = [];
+    const flushPath = () => { if (path.length > 1) chunks.push(path); path = []; };
+    for (const m of r.members || []) {
+      if (m.type !== 'way' || (m.role && !/^(forward|backward)$/.test(m.role))) continue;
+      const runs = runsByOsm.get(m.ref);
+      if (!runs) { flushPath(); continue; }
+      for (const run of runs) {
+        if (!path.length) { path = run.slice(); continue; }
+        const a = run[0], b = run[run.length - 1], last = path[path.length - 1];
+        if (a === last) path.push(...run.slice(1));
+        else if (b === last) path.push(...run.slice(0, -1).reverse());
+        else if (path.length === run.length || path[0] === a || path[0] === b) {
+          // The first way pointed the other way.
+          path.reverse();
+          const l2 = path[path.length - 1];
+          if (a === l2) path.push(...run.slice(1));
+          else if (b === l2) path.push(...run.slice(0, -1).reverse());
+          else { flushPath(); path = run.slice(); }
+        } else { flushPath(); path = run.slice(); }
+      }
+    }
+    flushPath();
+    if (!chunks.length) continue;
+    const main = chunks.reduce((a, c) => (c.length > a.length ? c : a));
+    const at = new Map(main.map((n, i) => [n, i]));
+    const stops = [];
+    for (const m of r.members || []) {
+      if (m.type !== 'node' || !/stop/.test(m.role || '')) continue;
+      const n = rail.nodeIndex.get(m.ref);
+      if (n === undefined || !at.has(n)) continue;
+      if (stopName.has(m.ref)) stops.push([at.get(n), n, stopName.get(m.ref)]);
+    }
+    stops.sort((a, b) => a[0] - b[0]);
+    if (stops.length < 2) continue;
+    // Commuter lines sharing the same stops here (Providence, Franklin,
+    // Needham into South Station) are one drive: keep one of them.
+    const seq = stops.map((q) => q[2]).join('>');
+    const key = /^CR-/.test(t.ref) ? `CR|${seq}` : `${t.ref}|${seq}`;
+    const prev = best.get(key);
+    const pref = (ref) => (/Providence|Worcester/.test(ref) ? 1 : 0);
+    if (prev && !(pref(t.ref) > pref(prev.ref) || (pref(t.ref) === pref(prev.ref) && main.length > prev.nodes.length))) continue;
+    best.set(key, { ref: t.ref, name: t.name || t.ref, colour: t.colour || '', nodes: main, stops: stops.map(([, n, nm]) => [n, nm]) });
+  }
+  const out = [...best.values()].sort((a, b) => a.ref.localeCompare(b.ref) || a.name.localeCompare(b.name));
+  log(`rail routes: ${out.length} (${[...new Set(out.map((r) => r.ref))].join(', ')})`);
+  return out;
+}
+
+// ================================================================ PLATFORMS
+// Station platforms from OSM outlines (open ways are a platform's centre
+// line: they get a 3 m wide outline on the side away from the track). Each
+// outline keeps the track node beside every vertex (the client takes heights
+// from it) and vertices that intrude on a track are pushed back to
+// PLATFORM_EDGE from its centreline. Height above the rail: high platforms
+// for the Red, Orange and Blue lines, low ones for the Green Line and trains.
+const PLATFORM_EDGE = 1.6;
+function buildPlatforms(els, rail, transit) {
+  const X = rail.nodes, C = 25, grid = new Map(), segs = [];
+  rail.ways.forEach((w, wi) => {
+    for (let i = 0; i + 1 < w.nodes.length; i++) {
+      const a = w.nodes[i], b = w.nodes[i + 1], k = segs.length;
+      segs.push([a, b, wi]);
+      for (let gx = Math.floor(Math.min(X[2 * a], X[2 * b]) / C); gx <= Math.floor(Math.max(X[2 * a], X[2 * b]) / C); gx++)
+        for (let gz = Math.floor(Math.min(X[2 * a + 1], X[2 * b + 1]) / C); gz <= Math.floor(Math.max(X[2 * a + 1], X[2 * b + 1]) / C); gz++) {
+          const key = gx * 100003 + gz;
+          if (!grid.has(key)) grid.set(key, []);
+          grid.get(key).push(k);
+        }
+    }
+  });
+  // Closest point on every track segment within r of (x, z).
+  const near = (x, z, r) => {
+    const out = [], seen = new Set();
+    for (let gx = Math.floor((x - r) / C); gx <= Math.floor((x + r) / C); gx++)
+      for (let gz = Math.floor((z - r) / C); gz <= Math.floor((z + r) / C); gz++)
+        for (const k of grid.get(gx * 100003 + gz) || []) {
+          if (seen.has(k)) continue;
+          seen.add(k);
+          const [a, b, wi] = segs[k];
+          const ax = X[2 * a], az = X[2 * a + 1], dx = X[2 * b] - ax, dz = X[2 * b + 1] - az, l = Math.hypot(dx, dz) || 1;
+          const t = Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / (l * l)));
+          const px = ax + dx * t, pz = az + dz * t, d = Math.hypot(x - px, z - pz);
+          if (d <= r) out.push({ a, b, wi, t, px, pz, d, ux: dx / l, uz: dz / l });
+        }
+    return out;
+  };
+  // Station names by position, for platforms named "Platform G (Tracks 12 & 13)".
+  const stations = [], stopsAt = [];
+  for (const e of transit) {
+    const t = e.tags || {};
+    if (e.type !== 'node' || !t.name || e.lat == null) continue;
+    if (/^(station|halt)$/.test(t.railway || '') || t.public_transport === 'station') stations.push([t.name, px(e.lon), pz(e.lat)]);
+    else if (t.public_transport === 'stop_position') stopsAt.push([t.name, px(e.lon), pz(e.lat)]);
+  }
+  const nearestName = (list, x, z, r) => {
+    let name = '', bd = r;
+    for (const [nm, sx, sz] of list) { const d = Math.hypot(sx - x, sz - z); if (d < bd) { bd = d; name = nm; } }
+    return name;
+  };
+  const out = [];
+  let pushed = 0, spanning = 0, rebuilt = 0;
+  for (const el of els) {
+    const t = el.tags || {};
+    let rings = polygonsOf(el).map((p) => p[0]);
+    if (!rings.length && el.type === 'way') {
+      const g = (el.geometry || []).filter(Boolean).map(proj);
+      if (g.length >= 2) {
+        // Widen away from the nearest track.
+        const m = g[Math.floor(g.length / 2)], hit = near(m[0], m[1], 12).sort((p, q) => p.d - q.d)[0];
+        const side = [];
+        for (let i = 0; i < g.length; i++) {
+          const a = g[Math.max(0, i - 1)], b = g[Math.min(g.length - 1, i + 1)];
+          const dx = b[0] - a[0], dz = b[1] - a[1], l = Math.hypot(dx, dz) || 1;
+          let nx = -dz / l, nz = dx / l;
+          if (hit && (g[i][0] - hit.px) * nx + (g[i][1] - hit.pz) * nz < 0) { nx = -nx; nz = -nz; }
+          side.push([g[i][0] + nx * 3, g[i][1] + nz * 3]);
+        }
+        rings = [G.orientOuter([...g, ...side.reverse()])];
+      }
+    }
+    for (const ring0 of rings) {
+      let ring = ring0.map((p) => p.slice());
+      // Tracks running alongside: samples of the outline near, and parallel to, a track.
+      const along = new Map();
+      let perim = 0;
+      for (let i = 0; i < ring.length; i++) {
+        const a = ring[i], b = ring[(i + 1) % ring.length];
+        const dx = b[0] - a[0], dz = b[1] - a[1], l = Math.hypot(dx, dz);
+        perim += l;
+        if (l < 0.5) continue;
+        for (let d = 1; d < l; d += 2) {
+          const x = a[0] + (dx * d) / l, z = a[1] + (dz * d) / l;
+          for (const h of near(x, z, 4.5)) if (Math.abs((dx * h.ux + dz * h.uz) / l) > 0.85) along.set(h.wi, (along.get(h.wi) || 0) + 2);
+        }
+      }
+      const best = Math.max(0, ...along.values());
+      if (best < 8) continue;
+      const ways = new Set([...along].filter(([, L]) => L >= Math.max(8, best * 0.25)).map(([wi]) => wi));
+      // A track through the middle: the outline covers the track bed too.
+      let inside = false;
+      for (const wi of ways) for (const n of rail.ways[wi].nodes) if (G.pointInRing(X[2 * n], X[2 * n + 1], ring)) inside = true;
+      if (inside) { spanning++; continue; }
+      // Where the outline sits beside its main track: s along it, d across (+ right).
+      const primary = [...along].sort((p, q) => q[1] - p[1])[0][0];
+      const tn = rail.ways[primary].nodes, ts = [0];
+      for (let i = 1; i < tn.length; i++) ts.push(ts[i - 1] + Math.hypot(X[2 * tn[i]] - X[2 * tn[i - 1]], X[2 * tn[i] + 1] - X[2 * tn[i - 1] + 1]));
+      const frame = (k, f) => {
+        const a = tn[k], b = tn[k + 1], dx = X[2 * b] - X[2 * a], dz = X[2 * b + 1] - X[2 * a + 1], l = Math.hypot(dx, dz) || 1;
+        return { x: X[2 * a] + dx * f, z: X[2 * a + 1] + dz * f, nx: -dz / l, nz: dx / l, node: f < 0.5 ? a : b };
+      };
+      const project = (x, z) => {
+        let best = null;
+        for (let k = 0; k + 1 < tn.length; k++) {
+          const a = tn[k], b = tn[k + 1], dx = X[2 * b] - X[2 * a], dz = X[2 * b + 1] - X[2 * a + 1], l2 = dx * dx + dz * dz || 1;
+          const f = Math.max(0, Math.min(1, ((x - X[2 * a]) * dx + (z - X[2 * a + 1]) * dz) / l2));
+          const q = frame(k, f), e = Math.hypot(x - q.x, z - q.z);
+          if (!best || e < best.e) best = { e, s: ts[k] + f * Math.sqrt(l2), d: (x - q.x) * q.nx + (z - q.z) * q.nz };
+        }
+        return best;
+      };
+      const pointAt = (s) => {
+        let k = 0;
+        while (k + 2 < tn.length && ts[k + 1] < s) k++;
+        return frame(k, Math.max(0, Math.min(1, (s - ts[k]) / (ts[k + 1] - ts[k] || 1))));
+      };
+      const pr = ring.map((p) => project(p[0], p[1]));
+      const sd = Math.sign(pr.reduce((acc, q) => acc + q.d, 0)) || 1;
+      let nodes = [];
+      if (Math.max(...pr.map((q) => q.d * sd)) < PLATFORM_EDGE + 2) {
+        // Drawn over or right against the track: a strip beside it instead,
+        // 3 m wide unless another track runs close on that side.
+        const s0 = Math.min(...pr.map((q) => q.s)), s1 = Math.max(...pr.map((q) => q.s));
+        if (s1 - s0 < 5) continue;
+        const m = pointAt((s0 + s1) / 2);
+        let W = 3;
+        for (let o = PLATFORM_EDGE + 0.5; o < PLATFORM_EDGE * 2 + W; o += 0.5) {
+          if (near(m.x + m.nx * sd * o, m.z + m.nz * sd * o, 0.4).some((h) => h.wi !== primary)) { W = Math.max(1.5, o - PLATFORM_EDGE * 2); break; }
+        }
+        const edge = [], back = [];
+        for (let q = s0; ; q = Math.min(s1, q + 5)) {
+          const f = pointAt(q);
+          edge.push([f.x + f.nx * sd * PLATFORM_EDGE, f.z + f.nz * sd * PLATFORM_EDGE]);
+          back.push([f.x + f.nx * sd * (PLATFORM_EDGE + W), f.z + f.nz * sd * (PLATFORM_EDGE + W)]);
+          nodes.push(f.node);
+          if (q >= s1) break;
+        }
+        ring = [...edge, ...back.reverse()];
+        nodes = [...nodes, ...nodes.slice().reverse()];
+        rebuilt++;
+      } else for (const p of ring) {
+        const hits = near(p[0], p[1], 30).filter((h) => ways.has(h.wi)).sort((q, r) => q.d - r.d);
+        if (!hits.length) { nodes.push(-1); continue; }
+        const h = hits[0];
+        nodes.push(h.t < 0.5 ? h.a : h.b);
+        for (const q of hits) {
+          if (q.d >= PLATFORM_EDGE) break;
+          let nx = p[0] - q.px, nz = p[1] - q.pz;
+          const l = Math.hypot(nx, nz);
+          if (l < 1e-3) { nx = -q.uz; nz = q.ux; } else { nx /= l; nz /= l; }
+          p[0] = q.px + nx * PLATFORM_EDGE; p[1] = q.pz + nz * PLATFORM_EDGE;
+          pushed++;
+        }
+      }
+      if (nodes.every((n) => n < 0)) continue;
+      // Missing heights borrow a neighbour's track node.
+      for (let k = 0; k < 2; k++) for (let i = 0; i < nodes.length; i++) if (nodes[i] < 0) nodes[i] = nodes[(i + nodes.length - 1) % nodes.length];
+      const kind = rail.ways[[...along].sort((p, q) => q[1] - p[1])[0][0]].kind;
+      const high = t.light_rail === 'yes' || t.tram === 'yes' || t.train === 'yes' ? false : t.subway === 'yes' || kind === 1;
+      let cx = 0, cz = 0;
+      for (const p of ring) { cx += p[0] / ring.length; cz += p[1] / ring.length; }
+      // "Lansdowne - Commuter Rail - Outbound" -> Lansdowne; "Platform G" -> the station's name.
+      let name = stationName(t.name);
+      if (!name || /^(platform|tracks?|(east|west|north|south|in|out)bound)\b/i.test(name)) name = stationName(nearestName(stations, cx, cz, 250) || nearestName(stopsAt, cx, cz, 300));
+      out.push([name, high ? 10 : 3, flat(ring), nodes]);
+    }
+  }
+  log(`platforms: ${out.length} (${rebuilt} redrawn beside the track, ${pushed} vertices pushed off it, ${spanning} outlines over the track skipped)`);
+  return out;
+}
+
+// Graph distance (m) from every rail node to the nearest tunnel portal or
+// surface track, through tunnel track only (Infinity where none is reachable).
+function portalDistance(rail) {
   const { nodes, ways, flags } = rail;
   const N = nodes.length / 2;
-  const elev = new Float32Array(N);
-  const onBridge = new Uint8Array(N), onGround = new Uint8Array(N), deck = new Float32Array(N);
   const nbr = Array.from({ length: N }, () => []);
+  const surface = new Uint8Array(N);
   for (const w of ways) {
-    const b = w.flags & RAIL_WAY.BRIDGE;
-    const d = b ? deckAt(w) : 0;
+    const tun = w.flags & RAIL_WAY.TUNNEL;
     for (let i = 0; i < w.nodes.length; i++) {
       const n = w.nodes[i];
-      if (b) { onBridge[n] = 1; deck[n] = Math.max(deck[n], d); } else onGround[n] = 1;
-      if (b && i) {
+      if (!tun) { surface[n] = 1; continue; }
+      if (i) {
         const a = w.nodes[i - 1];
         const L = Math.hypot(nodes[2 * n] - nodes[2 * a], nodes[2 * n + 1] - nodes[2 * a + 1]);
         nbr[a].push(n, L); nbr[n].push(a, L);
       }
     }
   }
-  // Multi-source Dijkstra (simple, small graph) from bridge nodes touching ground/portals/ends.
   const dist = new Float64Array(N).fill(Infinity);
-  const q = [];
-  for (let i = 0; i < N; i++) {
-    if (!onBridge[i]) continue;
-    if (onGround[i] || flags[i] & (RAIL_NODE.PORTAL | RAIL_NODE.EDGE) || nbr[i].length <= 2) { dist[i] = 0; q.push(i); }
-  }
-  while (q.length) {
-    let bi = 0;
-    for (let k = 1; k < q.length; k++) if (dist[q[k]] < dist[q[bi]]) bi = k;
-    const u = q.splice(bi, 1)[0];
+  // Binary heap Dijkstra.
+  const hn = [], hd = [];
+  const push = (n, d) => { let i = hn.length; hn.push(n); hd.push(d); while (i > 0) { const q = (i - 1) >> 1; if (hd[q] <= d) break; hn[i] = hn[q]; hd[i] = hd[q]; i = q; } hn[i] = n; hd[i] = d; };
+  const pop = () => {
+    const top = hn[0], ln = hn.pop(), ld = hd.pop();
+    if (hn.length) { let i = 0; for (;;) { const l = 2 * i + 1, r = l + 1; let m = i, md = ld; if (l < hn.length && hd[l] < md) { m = l; md = hd[l]; } if (r < hn.length && hd[r] < md) { m = r; md = hd[r]; } if (m === i) break; hn[i] = hn[m]; hd[i] = hd[m]; i = m; } hn[i] = ln; hd[i] = ld; }
+    return top;
+  };
+  // src: the portal (or surface node) each tunnel node is nearest to.
+  const src = new Int32Array(N).fill(-1);
+  for (let i = 0; i < N; i++) if (surface[i] || flags[i] & RAIL_NODE.PORTAL) { dist[i] = 0; src[i] = i; push(i, 0); }
+  while (hn.length) {
+    const d0 = hd[0], u = pop();
+    if (d0 > dist[u]) continue;
     for (let k = 0; k < nbr[u].length; k += 2) {
-      const v = nbr[u][k], nd = dist[u] + nbr[u][k + 1];
-      if (nd < dist[v]) { if (dist[v] === Infinity) q.push(v); dist[v] = nd; }
+      const v = nbr[u][k], nd = d0 + nbr[u][k + 1];
+      if (nd < dist[v]) { dist[v] = nd; src[v] = src[u]; push(v, nd); }
     }
   }
-  for (let i = 0; i < N; i++) if (onBridge[i] && !onGround[i]) elev[i] = deck[i] * Math.min(1, (Number.isFinite(dist[i]) ? dist[i] : 0) / 55);
+  return { dist, nbr, src };
+}
+
+const TUNNEL_DEPTH = [11, 11, 9];   // m of track below ground, by kind (rail, subway, light rail)
+const LAYER_STEP = 4.5;             // ...and this much deeper per OSM layer below -1 (lines crossing under others)
+const CROSS_CLEAR = 8;              // a line crossing under another passes at least this far below it
+const CROSS_GRADE = 0.04;           // ...ramping down to it no steeper than this
+const PORTAL_GRADE = 0.045;
+
+// Underground track heights (relative to the terrain): depthOf (m) below
+// the ground but on a smoothed profile (no roller coaster under the hills),
+// ramping up at PORTAL_GRADE to the portals (from the portal's own ground
+// level, whatever the hill above does).
+function tunnelElevations(rail, portal, groundAt, depthOf) {
+  const { nodes } = rail;
+  const N = nodes.length / 2;
+  const { dist, nbr, src } = portal;
+  const G = new Float32Array(N), abs = new Float32Array(N), tun = new Uint8Array(N);
+  for (let i = 0; i < N; i++) { G[i] = groundAt(nodes[2 * i], nodes[2 * i + 1]); tun[i] = nbr[i].length ? 1 : 0; }
+  for (let i = 0; i < N; i++) abs[i] = G[i] - depthOf[i];
+  const crossings = tunnelCrossings(rail);
+  // Highest each node may be: under the lines it crosses beneath, ramping down to them.
+  const cap = new Float32Array(N).fill(Infinity);
+  const addCaps = () => {
+    for (const [wa, a0, a1, ta, wb, b0, b1, tb] of crossings) {
+      const ya = abs[a0] + (abs[a1] - abs[a0]) * ta, yb = abs[b0] + (abs[b1] - abs[b0]) * tb;
+      const la = rail.ways[wa].layer, lb = rail.ways[wb].layer;
+      const aUnder = la !== lb ? la < lb : ya <= yb;
+      const [n0, n1, top] = aUnder ? [a0, a1, yb] : [b0, b1, ya];
+      cap[n0] = Math.min(cap[n0], top - CROSS_CLEAR);
+      cap[n1] = Math.min(cap[n1], top - CROSS_CLEAR);
+    }
+    for (let pass = 0; pass < 40; pass++) {
+      for (let i = 0; i < N; i++) {
+        if (!tun[i]) continue;
+        const nb = nbr[i];
+        for (let k = 0; k < nb.length; k += 2) cap[i] = Math.min(cap[i], cap[nb[k]] + CROSS_GRADE * nb[k + 1]);
+      }
+    }
+    for (let i = 0; i < N; i++) abs[i] = Math.min(abs[i], cap[i]);
+  };
+  addCaps();
+  // Stay under every bump within ~120 m along the tunnel.
+  for (let pass = 0; pass < 12; pass++) {
+    for (let i = 0; i < N; i++) {
+      if (!tun[i]) continue;
+      const nb = nbr[i];
+      for (let k = 0; k < nb.length; k += 2) abs[i] = Math.min(abs[i], abs[nb[k]] + 0.0);
+    }
+  }
+  // Smooth (Jacobi, length-weighted).
+  for (let pass = 0; pass < 60; pass++) {
+    const next = Float32Array.from(abs);
+    for (let i = 0; i < N; i++) {
+      if (!tun[i]) continue;
+      const nb = nbr[i];
+      let s = abs[i], w = 1;
+      for (let k = 0; k < nb.length; k += 2) { const wt = 10 / Math.max(2, nb[k + 1]); s += abs[nb[k]] * wt; w += wt; }
+      next[i] = Math.min(s / w, G[i] - depthOf[i] * 0.6, cap[i]);
+    }
+    abs.set(next);
+    // Crossings again once the lines above have settled.
+    if (pass === 30) addCaps();
+  }
+  // Tracks side by side (both directions of a line, through a station or a
+  // shared box) at one level: average each node with the tunnel nodes beside
+  // it, then smooth again along the track. Lines stacked well apart stay so.
+  const C = 15, grid = new Map();
+  for (let i = 0; i < N; i++) {
+    if (!tun[i]) continue;
+    const k = Math.floor(nodes[2 * i] / C) * 100003 + Math.floor(nodes[2 * i + 1] / C);
+    if (!grid.has(k)) grid.set(k, []);
+    grid.get(k).push(i);
+  }
+  const dirAt = (i) => {
+    const o = nbr[i][0], dx = nodes[2 * o] - nodes[2 * i], dz = nodes[2 * o + 1] - nodes[2 * i + 1], l = Math.hypot(dx, dz) || 1;
+    return [dx / l, dz / l];
+  };
+  const beside = [];
+  for (let i = 0; i < N; i++) {
+    if (!tun[i] || !nbr[i].length) continue;
+    const x = nodes[2 * i], z = nodes[2 * i + 1];
+    const [dx, dz] = dirAt(i);
+    const list = [];
+    for (let gx = Math.floor((x - 12) / C); gx <= Math.floor((x + 12) / C); gx++)
+      for (let gz = Math.floor((z - 12) / C); gz <= Math.floor((z + 12) / C); gz++)
+        for (const j of grid.get(gx * 100003 + gz) || []) {
+          if (!nbr[j].length) continue;
+          const ex = nodes[2 * j] - x, ez = nodes[2 * j + 1] - z;
+          const lat = Math.abs(ex * dz - ez * dx), lon = Math.abs(ex * dx + ez * dz);
+          const [jx, jz] = dirAt(j);
+          if (lat > 2 && lat < 12 && lon < 6 && Math.abs(jx * dx + jz * dz) > 0.85 && Math.abs(abs[j] - abs[i]) < 7) list.push(j);
+        }
+    if (list.length) beside.push([i, list]);
+  }
+  for (let pass = 0; pass < 6; pass++) {
+    const next = Float32Array.from(abs);
+    for (const [i, list] of beside) {
+      let s = abs[i];
+      for (const j of list) s += abs[j];
+      next[i] = s / (list.length + 1);
+    }
+    abs.set(next);
+    for (let sm = 0; sm < (pass === 5 ? 40 : 8); sm++) {
+      const nx2 = Float32Array.from(abs);
+      for (let i = 0; i < N; i++) {
+        if (!tun[i]) continue;
+        const nb = nbr[i];
+        let s = abs[i] * 2, w = 2;
+        for (let k = 0; k < nb.length; k += 2) { s += abs[nb[k]]; w++; }
+        nx2[i] = Math.min(s / w, G[i] - depthOf[i] * 0.6, cap[i]);
+      }
+      abs.set(nx2);
+    }
+  }
+  const rel = new Float32Array(N);
+  for (let i = 0; i < N; i++) {
+    if (!tun[i]) continue;
+    const ramp = src[i] >= 0 ? G[src[i]] - PORTAL_GRADE * dist[i] : -Infinity;
+    rel[i] = Math.min(0, Math.max(abs[i], ramp) - G[i]);
+  }
+  return rel;
+}
+
+// Tunnel tracks of different ways crossing in plan (not side by side):
+// [wayA, a0, a1, tA, wayB, b0, b1, tB] with the crossing at tA / tB along each.
+function tunnelCrossings(rail) {
+  const X = rail.nodes, C = 30, grid = new Map(), segs = [];
+  rail.ways.forEach((w, wi) => {
+    if (!(w.flags & RAIL_WAY.TUNNEL)) return;
+    for (let i = 0; i + 1 < w.nodes.length; i++) {
+      const a = w.nodes[i], b = w.nodes[i + 1], k = segs.length;
+      segs.push([wi, a, b]);
+      for (let gx = Math.floor(Math.min(X[2 * a], X[2 * b]) / C); gx <= Math.floor(Math.max(X[2 * a], X[2 * b]) / C); gx++)
+        for (let gz = Math.floor(Math.min(X[2 * a + 1], X[2 * b + 1]) / C); gz <= Math.floor(Math.max(X[2 * a + 1], X[2 * b + 1]) / C); gz++) {
+          const key = gx * 100003 + gz;
+          if (!grid.has(key)) grid.set(key, []);
+          grid.get(key).push(k);
+        }
+    }
+  });
+  const out = [], seen = new Set();
+  for (const list of grid.values()) {
+    for (let p = 0; p < list.length; p++) for (let q = p + 1; q < list.length; q++) {
+      const [wa, a0, a1] = segs[list[p]], [wb, b0, b1] = segs[list[q]];
+      if (wa === wb || a0 === b0 || a0 === b1 || a1 === b0 || a1 === b1) continue;
+      const key = list[p] < list[q] ? list[p] * 1e6 + list[q] : list[q] * 1e6 + list[p];
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const ax = X[2 * a0], az = X[2 * a0 + 1], ux = X[2 * a1] - ax, uz = X[2 * a1 + 1] - az;
+      const bx = X[2 * b0], bz = X[2 * b0 + 1], vx = X[2 * b1] - bx, vz = X[2 * b1 + 1] - bz;
+      const den = ux * vz - uz * vx, lu = Math.hypot(ux, uz), lv = Math.hypot(vx, vz);
+      if (Math.abs(den) < 0.5 * lu * lv) continue;   // within 30 degrees of parallel: a junction or a shared box
+      const ta = ((bx - ax) * vz - (bz - az) * vx) / den, tb = ((bx - ax) * uz - (bz - az) * ux) / den;
+      if (ta < 0 || ta > 1 || tb < 0 || tb > 1) continue;
+      out.push([wa, a0, a1, ta, wb, b0, b1, tb]);
+    }
+  }
+  return out;
+}
+
+// Rail heights: bridges carry a deck that clears what they cross, and ramp
+// up to it at RAIL_RAMP (onto the at-grade approach too, like the embankment
+// up to the Longfellow). Track at a level crossing, in a tunnel or at a
+// portal stays on the ground; next to those the ramp may steepen to
+// RAIL_RAMP_MAX.
+const RAIL_RAMP = 0.035, RAIL_RAMP_MAX = 0.11;
+function railElevations(rail, deckAt, pinnedAt) {
+  const { nodes, ways, flags } = rail;
+  const N = nodes.length / 2;
+  const onBridge = new Uint8Array(N), deck = new Float32Array(N), tunnel = new Uint8Array(N);
+  const edges = [];
+  for (const w of ways) {
+    const b = w.flags & RAIL_WAY.BRIDGE;
+    const d = b ? deckAt(w) : null;   // deck height per node of the way
+    for (let i = 0; i < w.nodes.length; i++) {
+      const n = w.nodes[i];
+      if (b) { onBridge[n] = 1; deck[n] = Math.max(deck[n], d[i]); }
+      if (w.flags & RAIL_WAY.TUNNEL) tunnel[n] = 1;
+      if (i) {
+        const a = w.nodes[i - 1];
+        edges.push(a, n, Math.hypot(nodes[2 * n] - nodes[2 * a], nodes[2 * n + 1] - nodes[2 * a + 1]));
+      }
+    }
+  }
+  // A portal is at ground level even where a bridge runs straight into it.
+  const pinned = new Uint8Array(N);
+  for (let i = 0; i < N; i++) {
+    if (flags[i] & RAIL_NODE.PORTAL || (!onBridge[i] && (tunnel[i] || pinnedAt(nodes[2 * i], nodes[2 * i + 1])))) pinned[i] = 1;
+  }
+  // Upper envelope falling away from the decks at RAIL_RAMP...
+  const env = Float32Array.from(deck);
+  // ...and the most the track may rise from a pinned node at RAIL_RAMP_MAX.
+  const cap = new Float32Array(N).fill(Infinity);
+  for (let i = 0; i < N; i++) if (pinned[i]) cap[i] = 0;
+  for (let pass = 0, changed = true; changed && pass < 400; pass++) {
+    changed = false;
+    for (let e = 0; e < edges.length; e += 3) {
+      const a = edges[e], b = edges[e + 1], L = edges[e + 2];
+      for (const [u, v] of [[a, b], [b, a]]) {
+        if (!pinned[v] && env[u] - RAIL_RAMP * L > env[v] + 1e-4) { env[v] = env[u] - RAIL_RAMP * L; changed = true; }
+        if (cap[u] + RAIL_RAMP_MAX * L < cap[v] - 1e-4) { cap[v] = cap[u] + RAIL_RAMP_MAX * L; changed = true; }
+      }
+    }
+  }
+  const elev = new Float32Array(N);
+  for (let i = 0; i < N; i++) elev[i] = pinned[i] ? 0 : Math.max(0, Math.min(env[i], cap[i]));
   return elev;
 }
 
@@ -1019,23 +1480,100 @@ for (const r of roadData.roads) {
   const pts = roadPts(r);
   rasterLine(pts, r.width / 2 + (hasSidewalk(r) ? SIDEWALK : 0.3), B_ROAD);
 }
-// Rail bridges: match an adjacent road bridge deck (e.g. the Red Line on the
-// Longfellow), else clear water (3 m) or roads (6.5 m).
+// Rail bridges: follow an adjacent road bridge deck (e.g. the Red Line on the
+// Longfellow, low at the abutments and high over the channel), else clear
+// water (3 m) or roads (6.5 m).
 const bridgeNodes = [];
 for (const r of roadData.roads) if (r.flags & ROAD_FLAGS.BRIDGE) for (const n of r.nodes) if (elev[n] > 0.5) bridgeNodes.push([nodes[2 * n], nodes[2 * n + 1], elev[n]]);
 const railY = railElevations(rail, (w) => {
   const pts = railPts(w);
   let wet = false, road = false;
   for (const p of pts) { if (isWaterAt(p[0], p[1])) wet = true; if (rasterAt(p[0], p[1]) & B_ROAD) road = true; }
-  // Share a road deck only when the track runs on it (within ~15 m of a deck node).
-  const mid = pts[Math.floor(pts.length / 2)];
-  let match = 0;
-  for (const [x, z, e] of bridgeNodes) if (Math.hypot(x - mid[0], z - mid[1]) < 15) match = Math.max(match, e);
-  return match || (wet ? 3.0 : road ? 6.5 : 1.0);
-});
+  // Share a road deck only where the track runs on it (within ~15 m of a
+  // deck node), and not a highway viaduct passing overhead.
+  const deckNear = (p) => {
+    let e = 0, bd = 15;
+    for (const [x, z, h] of bridgeNodes) { const d = Math.hypot(x - p[0], z - p[1]); if (d < bd && h < 9) { bd = d; e = h; } }
+    return e;
+  };
+  const match = pts.map(deckNear);
+  if (match.some((e) => e > 0)) {
+    // Fill nodes between matched ones from their neighbours.
+    for (let k = 1; k < match.length; k++) if (!match[k]) match[k] = match[k - 1];
+    for (let k = match.length - 2; k >= 0; k--) if (!match[k]) match[k] = match[k + 1];
+    return match;
+  }
+  return pts.map(() => (wet ? 3.0 : road ? 6.5 : 1.0));
+}, (x, z) => (rasterAt(x, z) & B_ROAD) !== 0);
 for (const p of roadData.paths) rasterLine(p.pts, p.width / 2, B_PATH);
 for (const w of rail.ways) rasterLine(railPts(w), 2.0, B_RAIL);
 log('raster: roads/buildings done');
+
+// ---- terrain (ground height under everything; road/rail heights stay relative to it)
+const COVER = -5.4; // covered tunnels: the ground above them is real
+const cuts = [];
+for (const r of roadData.roads) {
+  for (let i = 0; i + 1 < r.nodes.length; i++) {
+    const a = r.nodes[i], b = r.nodes[i + 1];
+    if ((elev[a] + elev[b]) / 2 > -0.3) continue;
+    if (r.flags & ROAD_FLAGS.TUNNEL && Math.max(elev[a], elev[b]) <= COVER) continue;
+    cuts.push([nodes[2 * a], nodes[2 * a + 1], nodes[2 * b], nodes[2 * b + 1], r.width / 2 + 2]);
+  }
+}
+// Rail ramps down to tunnel portals are open cuts too.
+const railPortal = portalDistance(rail);
+for (const w of rail.ways) {
+  if (!(w.flags & RAIL_WAY.TUNNEL)) continue;
+  for (let i = 0; i + 1 < w.nodes.length; i++) {
+    const a = w.nodes[i], b = w.nodes[i + 1];
+    if (Math.min(railPortal.dist[a], railPortal.dist[b]) * PORTAL_GRADE > 5.4) continue;
+    cuts.push([rail.nodes[2 * a], rail.nodes[2 * a + 1], rail.nodes[2 * b], rail.nodes[2 * b + 1], 3]);
+  }
+}
+const terrain = buildTerrain({ box: WBOX, unproj, land, water, cuts, aerodromes: aero.aerodromes, log });
+const groundAt = (x, z) => {
+  const fx = (x - terrain.minX) / terrain.step, fz = (z - terrain.minZ) / terrain.step;
+  if (!(fx >= 0 && fz >= 0 && fx <= terrain.w - 1 && fz <= terrain.h - 1)) return 0;
+  const i = Math.min(terrain.w - 2, fx | 0), j = Math.min(terrain.h - 2, fz | 0), u = fx - i, v = fz - j, k = j * terrain.w + i, H = terrain.heights;
+  return (H[k] * (1 - u) + H[k + 1] * u) * (1 - v) + (H[k + terrain.w] * (1 - u) + H[k + terrain.w + 1] * u) * v;
+};
+// Underground track: relative heights from the terrain (bridges come from railY).
+{
+  const depthOf = new Float32Array(rail.nodes.length / 2);
+  for (const w of rail.ways) {
+    const d = TUNNEL_DEPTH[w.kind] + LAYER_STEP * (Math.max(1, -w.layer) - 1);
+    for (const n of w.nodes) depthOf[n] = Math.max(depthOf[n], d);
+  }
+  const tunRel = tunnelElevations(rail, railPortal, groundAt, depthOf);
+  let deep = 0;
+  for (let i = 0; i < tunRel.length; i++) if (tunRel[i] < -0.02) { railY[i] = tunRel[i]; deep++; }
+  log(`rail: ${deep} underground track nodes (deepest ${Math.min(...tunRel).toFixed(1)} m below ground)`);
+}
+const railRoutes = buildRailRoutes(load('transit'), rail);
+const railPlatforms = buildPlatforms(load('platforms'), rail, load('transit'));
+// Inland water that lies wholly inside a land polygon becomes a hole in it, so
+// the ground mesh has crisp banks; its islands become land of their own. The
+// rest (creek mouths crossing the coastline) is handled on the client.
+const waterHole = water.map(() => 0);
+{
+  const holeBoxes = land.map(() => []);
+  let holes = 0;
+  const islands = [];
+  water.forEach((wp, wi) => {
+    const r = wp[0], bb = G.ringBBox(r);
+    const li = land.findIndex((lp) => G.bboxOverlap(G.ringBBox(lp[0]), bb) && r.every(([x, z]) => G.pointInPolygon(x, z, lp)));
+    if (li < 0) return;
+    // Overlapping holes would break triangulation: keep the first one.
+    if (holeBoxes[li].some(([hb, hr]) => G.bboxOverlap(hb, bb) && (r.some(([x, z]) => G.pointInRing(x, z, hr)) || hr.some(([x, z]) => G.pointInRing(x, z, r))))) return;
+    land[li].push(r);
+    holeBoxes[li].push([bb, r]);
+    for (const isl of wp.slice(1)) islands.push([isl]);
+    waterHole[wi] = 1;
+    holes++;
+  });
+  land.push(...islands);
+  log(`terrain: ${holes} inland water polygons cut out of the land (${islands.length} islands), ${water.length - holes} left to the client`);
+}
 
 // ---- buildings blocking roads: make them non-solid
 {
@@ -1152,7 +1690,8 @@ const out = {
     metersPerDegree: { lat: M_LAT, lon: M_LON },
     play: { minX: r1(PLAY.minX), maxX: r1(PLAY.maxX), minZ: r1(PLAY.minZ), maxZ: r1(PLAY.maxZ) },
     water: { minX: r1(WBOX.minX), maxX: r1(WBOX.maxX), minZ: r1(WBOX.minZ), maxZ: r1(WBOX.maxZ) },
-    attribution: 'Map data © OpenStreetMap contributors (ODbL)',
+    terrain: { file: 'terrain.bin', minX: terrain.minX, minZ: terrain.minZ, step: terrain.step, w: terrain.w, h: terrain.h },
+    attribution: 'Map data © OpenStreetMap contributors (ODbL); terrain: USGS 3DEP via AWS Terrain Tiles',
     built: new Date().toISOString(),
   },
   names: roadData.names,
@@ -1173,6 +1712,9 @@ const out = {
   ]),
   land: land.map((p) => p.map(flat)),
   water: water.map((p) => p.map(flat)),
+  // surface level of each water polygon, decimeters; 1 where it is a hole in a land polygon
+  waterLevels: terrain.levels.map((v) => Math.round(v * 10)),
+  waterHole,
   // [type, [[outer], [hole]...]]
   areas: areas.map((a) => [a.type, a.poly.map(flat)]),
   // Rail network: node x,z; node elevation*10; node flags (1 portal, 2 stop, 4 buffer, 8 map edge);
@@ -1180,7 +1722,11 @@ const out = {
   railNodes: rail.nodes,
   railY: Array.from(railY, (e) => Math.round(e * 10)),
   railFlags: Array.from(rail.flags),
-  railWays: rail.ways.map((w) => [w.kind, w.flags, w.svc, w.nodes]),
+  railWays: rail.ways.map((w) => [w.kind, w.flags, w.svc, w.nodes, Math.round(w.speed * 10)]),
+  // Line routes: [ref, name, colour, [rail node...], [[stop node, name]...]]
+  railRoutes: railRoutes.map((r) => [r.ref, r.name, r.colour, r.nodes, r.stops]),
+  // Station platforms: [station name, height above the rail*10, [x,z...], [track node beside each vertex]]
+  railPlatforms,
   // Airport: taxi graph nodes; ways [kind(0 runway,1 taxiway,2 taxilane,3 lead-in,4 connector), width*10, [node...]];
   // runways [ref, width*10, [node...], startEndName, endEndName]; stands [ref, [node from taxi side to stand]]
   aero: {
@@ -1201,6 +1747,22 @@ fs.mkdirSync(path.dirname(outFile), { recursive: true });
 const json = JSON.stringify(out);
 fs.writeFileSync(outFile, json);
 log(`wrote ${outFile}: ${(json.length / 1e6).toFixed(2)} MB (${(zlib.gzipSync(json).length / 1e6).toFixed(2)} MB gzipped)`);
+const tbin = encodeTerrain(terrain);
+fs.writeFileSync(terrainFile, tbin);
+log(`wrote ${terrainFile}: ${(tbin.length / 1e6).toFixed(2)} MB (${(zlib.gzipSync(tbin).length / 1e6).toFixed(2)} MB gzipped)`);
+{
+  // Hillshade preview of the terrain (tools/.cache/terrain.png).
+  const { w, h, heights, kind } = terrain, img = new Uint8Array(w * h * 3);
+  for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) {
+    const k = j * w + i, e = heights[k];
+    const dx = (heights[j * w + Math.min(w - 1, i + 1)] - heights[j * w + Math.max(0, i - 1)]) / 20;
+    const dz = (heights[Math.min(h - 1, j + 1) * w + i] - heights[Math.max(0, j - 1) * w + i]) / 20;
+    const shade = Math.max(0, Math.min(1, 0.75 - dx * 2.2 + dz * 2.2));
+    const c = kind[k] === 0 ? [90 + e * 4, 140 + e * 2, 80] : [60, 110, 170];
+    for (let q = 0; q < 3; q++) img[k * 3 + q] = Math.max(0, Math.min(255, c[q] * shade));
+  }
+  fs.writeFileSync(path.join(cacheDir, 'terrain.png'), encodePNG(w, h, img));
+}
 
 // ================================================================== PREVIEW
 {

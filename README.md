@@ -3,13 +3,16 @@
 An open-world driving game set in Boston, MA, playable in the browser. The city comes from
 [OpenStreetMap](https://www.openstreetmap.org) data. It includes 40,000 buildings with their real heights,
 11,600 streets with real names, lanes and one-way rules, the Charles River, the harbor, East Boston and
-Logan Airport, and 22,000 trees.
+Logan Airport, and 22,000 trees. The ground comes from USGS elevation data, so Beacon Hill, Mission Hill
+and Bunker Hill are real hills.
 
 The roads are 3D: drive over the Zakim and the Harvard Bridge, down the Mass Pike trench, through the
-Big Dig tunnels under downtown, and under the harbor through the Sumner and Callahan tunnels. Trains run
-wherever you can see track: the Red Line over the Longfellow, the Green Line down Huntington and Comm Ave,
-and commuter rail and Amtrak into North and South Station. Planes land on 4R over Castle Island, taxi to
-the gates, and take off from 4L. You can also leave the car and fly around.
+Big Dig tunnels under downtown, and under the harbor through the Sumner and Callahan tunnels. The whole
+subway is there too, with tunnels and 45 stations, and you can drive the trains yourself: the Red, Orange
+and Blue Lines, all four Green Line branches and the commuter rail. Trains also run the Red Line over the
+Longfellow, the Green Line down Huntington and Comm Ave, and commuter rail and Amtrak into North and South
+Station. Planes land on 4R over Castle Island, taxi to the gates, and take off from 4L. You can also leave
+the car and fly around.
 
 ![Driving down Commonwealth Avenue in Back Bay](docs/screenshot-drive.jpg)
 
@@ -19,6 +22,7 @@ the gates, and take off from 4L. You can also leave the car and fly around.
 | ![Boylston Street at night](docs/screenshot-night.jpg) | ![Inside the Mass Pike tunnel under Back Bay](docs/screenshot-tunnel.jpg) |
 | ![Fenway Park and the Green Monster](docs/screenshot-fenway.jpg) | ![The State House's gold dome](docs/screenshot-statehouse.jpg) |
 | ![A Red Line train crossing the Longfellow Bridge](docs/screenshot-redline.jpg) | ![A jet on short final to runway 4R at Logan](docs/screenshot-logan.jpg) |
+| ![Driving a Green Line train into Park Street](docs/screenshot-subway.jpg) | ![Climbing Joy Street up Beacon Hill](docs/screenshot-hill.jpg) |
 | ![Map with a GPS route to Fenway Park](docs/screenshot-map.jpg) | |
 
 ## Play
@@ -40,6 +44,14 @@ file. It's handy if you host the game on a network, but it isn't required.
 
 - **Garage** – the Sports Coupe does 200 mph flat out and 0-60 in 3.3 s. The Boston Cab and the Townie SUV
   trade speed for weight.
+- **Drive a Train** – pick a line and a direction (Red Line from Central to Broadway, Orange Line from
+  Ruggles to Sullivan Square, Blue Line out to Wood Island, the Green Line B, C, D and E branches, or the
+  commuter rail into South Station) and drive it from the cab. **W** is power, **S** the brake and
+  **Space** the emergency brake. Keep to the speed limit, which drops for curves and tunnels; the HUD
+  warns you when a lower limit is coming. If you go well over it, the train protection stops you. At each
+  station, stop with the train along the platform, close to the mark: the closer, the more points. The
+  doors open, and after the dwell you're off to the next stop. Missed stops and speeding cost points, and
+  each line keeps your best score. **C** switches between the cab and chase cameras.
 - **Fly Around** – a ghost camera that goes anywhere, through buildings and underground. Press **G** to
   start or stop flying, and **Enter** to drop the car on the road below you. On the map (**M**), click
   a spot to jump there.
@@ -64,7 +76,8 @@ file. It's handy if you host the game on a network, but it isn't required.
 | Shift | Boost |
 | H | Horn |
 | B | Look back |
-| C | Change camera (chase, far, hood, overhead) |
+| C | Change camera (chase, far, hood, overhead; cab and chase in a train) |
+| Drag | Look around (the view eases back when you let go) |
 | M | Full map with click-to-set GPS waypoints |
 | R | Reset the car onto the nearest road |
 | N | Cycle day / sunset / night |
@@ -72,6 +85,8 @@ file. It's handy if you host the game on a network, but it isn't required.
 | K | Mute |
 | F | Fullscreen |
 | Esc / P | Pause |
+
+In a train, W/↑ is power, S/↓ the brake and Space the emergency brake.
 
 In **Settings** you can set the amount of traffic, trains (Off to Max: about 22 trains around you) and
 planes (Off to Max: a landing and a takeoff every minute, six overflights and a full terminal).
@@ -84,6 +99,14 @@ On touch devices, on-screen buttons appear automatically.
 Everything is generated from OSM tags at load time. There are no texture or 3D model files; textures are
 painted on canvases in the browser:
 
+- **Terrain** – heights come from the USGS 3D Elevation Program, through the AWS Terrain Tiles
+  (`tools/fetch-dem.mjs`), resampled to a 10 m grid. The highest point is 67 m on Parker Hill above
+  Mission Hill; the State House sits at 27 m on Beacon Hill and the Bunker Hill Monument at 24 m.
+  Water is flat at its own level and the banks stay above it. Every map layer (parks, streets,
+  sidewalks, crosswalks, runways, rail) is draped over the ground, and buildings stand on the lowest
+  ground under their footprint. Road and rail heights from the elevation solver are relative to the
+  ground, and decks are smoothed between their ends, so a bridge doesn't step with the riverbank
+  under it. The car climbs and coasts on real slopes.
 - **Roads** – widths come from the lane count and road class. Lane markings follow US conventions
   (double yellow lines, dashed white lane lines, edge lines) and stop cleanly at intersections.
   There are also sidewalks with curbs, mapped crosswalks and rail lines, including the Green Line tracks.
@@ -109,7 +132,16 @@ painted on canvases in the browser:
 - **Trains** – OSM route relations tell which track each line uses. Red, Orange and Blue Line cars,
   two-car Green Line trolleys with pantographs, MBTA bilevel commuter trains, Amtrak and Grand Junction
   freight all follow the real track. They stop at stations, reverse at terminals, and slip into tunnel
-  portals. Trains are solid, so don't park on the tracks.
+  portals. Trains are solid, so don't park on the tracks. While you drive a train, the others run in the
+  tunnels too, but stay off your line.
+- **The subway** – tunnels follow the ground about 9-11 m down. They go deeper per OSM `layer`, and
+  where two lines cross, the lower one passes at least 8 m under the other, ramping down at 4%. Tracks
+  side by side share one box with tiled walls, lamps and a ceiling, and ramp up at 4.5% to their
+  portals through open cuts with retaining walls. Station platforms come from their OSM outlines: high
+  platforms for the Red, Orange and Blue Lines and low ones for the Green Line and commuter rail, with a
+  yellow edge strip. Underground stations have bright ceiling lights and a taller hall, and the wall
+  steps back behind each platform. Name boards carry each line's colour. In a tunnel the daylight dims
+  and the distance fades to dark.
 - **Street signs** – Boston-green name blades on a corner pole at about 2,200 named intersections, with
   standard abbreviations (St, Ave, Sq).
 - **Landmarks** – Fenway Park has a brick arched facade, seating that slopes down to the field, the
@@ -136,9 +168,12 @@ src/                  game code (ES modules, no build step)
   main.js             bootstrap, state machine, main loop
   world.js            all static geometry (roads, buildings, water, trees)
   structures.js       bridge decks, pillars, railings, tunnels, cuts, ground mask
+  terrain.js          ground heights and draping map layers over the hills
+  railworld.js        subway tunnels, rail cuts, portals, station platforms and name boards
+  trainmode.js        driving a train: lines, controls, speed limits, stops, cab/chase camera
   landmarks.js        Fenway Park, the State House dome and other dressed landmarks
   signs.js            street name signs
-  trains.js           trains on the surface rail network
+  trains.js           AI trains on the rail network (and drawing yours)
   airport.js          Logan's runways, taxiways, markings and airfield lights
   planes.js           aircraft: arrivals, taxiing, departures, overflights
   fly.js              ghost camera for fly mode
@@ -147,6 +182,7 @@ src/                  game code (ES modules, no build step)
   traffic.js          AI cars + traffic signals; roadgraph.js: graph + A*
   missions.js         free roam, races, taxi; hud.js: HUD, minimap, big map
 data/boston.json      processed map (generated)
+data/terrain.bin      10 m ground height grid (generated)
 tools/                data pipeline, dev server and automated tests
 vendor/               three.js r186 and earcut (MIT / ISC)
 ```
@@ -158,10 +194,12 @@ The playable area is set in `tools/config.mjs`. To pull fresh OSM data or cover 
 ```sh
 npm install                 # only needed for the tools (Node 18+)
 npm run fetch-osm           # downloads raw OSM data from Overpass into tools/.cache/
-npm run build-map           # writes data/boston.json and tools/.cache/preview.png
+npm run fetch-dem           # downloads elevation tiles (AWS Terrain Tiles) into tools/.cache/dem/
+npm run build-map           # writes data/boston.json, data/terrain.bin and tools/.cache/preview.png
 ```
 
 `fetch-osm` takes a few minutes because public Overpass servers are shared and rate-limited.
+`./run.sh --rebuild` runs all three.
 
 ## Tests
 
@@ -169,12 +207,15 @@ npm run build-map           # writes data/boston.json and tools/.cache/preview.p
 npm test                          # boots the game in headless Chrome and checks it
 node tools/test-3d-roads.mjs      # autopilot drives the Pike, Big Dig, Zakim, bridges and harbor tunnels
 node tools/test-autodrive.mjs     # an autopilot drives every race end-to-end, with checkpoint splits
+node tools/test-trains.mjs        # an autopilot drives every train line, stopping at every platform
 ```
 
 `npm test` checks loading, driving, braking and reversing, building collisions, splashing into the
-Charles and respawning, traffic, the coupe's 200 mph top speed and 0-60 time, driving the Harvard Bridge
-deck and the Pike tunnel, signs and landmarks, fly mode (flying through buildings and dropping the car),
-trains running and being solid, planes parked at Logan, landing and taking off, the plane settings,
+Charles and respawning, traffic, the coupe's 200 mph top speed and 0-60 time, the hills (and driving up
+Beacon Hill), driving the Harvard Bridge deck and the Pike tunnel, signs and landmarks, fly mode (flying
+through buildings and dropping the car), trains running and being solid, the subway's tunnels and
+stations, drag to look, train mode (driving the Red Line underground to Kendall/MIT and stopping at the
+platform, AI trains in the tunnels), planes parked at Logan, landing and taking off, the plane settings,
 finishing a race, a taxi fare, GPS routing (checkpoints on ordinary streets, never the wrong way up a
 ramp), bridge pillars clear of the roads below, every setting, night mode and frame rate.
 It saves screenshots to `tools/screenshots/`. The tests need Google Chrome installed; set `CHROME_PATH`
@@ -185,11 +226,15 @@ if it isn't in the default location.
 The game is plain JavaScript and WebGL (Three.js). WebAssembly wasn't needed: rendering runs on the
 GPU, and the car physics, collision queries and traffic AI take well under a millisecond per frame.
 
-Road heights are an educated guess from OSM's vertical-order tags, and the ground itself is flat (Beacon
-Hill has no hill). Garage and loading-dock ramps on service roads are left out.
+Road and tunnel heights are an educated guess from OSM's vertical-order tags. The ground is real, but
+the solver still works relative to it: a road keeps its height above the ground, so a highway on a
+hillside follows the hill. Subway depths are a guess too: OSM records which tunnel is below which, not how
+deep they are. Garage and loading-dock ramps on service roads are left out.
 
 ## Credits
 
 - Map data © OpenStreetMap contributors, available under the
   [Open Database License](https://www.openstreetmap.org/copyright).
+- Elevation: USGS 3D Elevation Program (3DEP), via the
+  [AWS Terrain Tiles](https://registry.opendata.aws/terrain-tiles/) open dataset (terrarium format).
 - [three.js](https://threejs.org) (MIT) and [earcut](https://github.com/mapbox/earcut) (ISC).

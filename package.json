@@ -6,6 +6,7 @@
   "type": "module",
   "scripts": {
     "fetch-osm": "node tools/fetch-osm.mjs",
+    "fetch-dem": "node tools/fetch-dem.mjs",
     "build-map": "node tools/build-map.mjs",
     "start": "node tools/serve.mjs",
     "test": "node tools/test-game.mjs"

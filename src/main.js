@@ -20,6 +20,7 @@ import { SkidMarks } from './effects.js';
 import { StreetSigns } from './signs.js';
 import { updateLandmarks } from './landmarks.js';
 import { Trains } from './trains.js';
+import { TrainMode, lineName } from './trainmode.js';
 import { FlyCam } from './fly.js';
 import { Planes } from './planes.js';
 import { updateLightMaterial } from './airport.js';
@@ -111,9 +112,12 @@ class Game {
     this.traffic.setDensity(this.settings.traffic);
     this.trains = new Trains(this);
     this.trains.setDensity(this.settings.trains);
+    this.trainMode = new TrainMode(this);
     this.planes = new Planes(this, world.airport);
     this.planes.setDensity(this.settings.planes);
     this.fly = new FlyCam(this.camera, canvas, this.input);
+    this.fly.terrain = this.map.terrain;
+    this.initDragLook(canvas);
     this.focusPt = { x: 0, y: 0, z: 0 };
     this.menu = new Menu(this);
 
@@ -194,7 +198,7 @@ class Game {
     this.applyTimeOfDay();
   }
 
-  placeCar(x, z, heading, y = 0) {
+  placeCar(x, z, heading, y = this.map.terrain.h(x, z)) {
     // Nudge along the heading until no collision circle overlaps a wall.
     const fx = Math.sin(heading), fz = -Math.cos(heading);
     const out = {}, g = {};
@@ -242,6 +246,7 @@ class Game {
   // -------------------------------------------------------------- states
   begin(mode, arg) {
     this.leaveFly();
+    this.endTrain();
     this.audio.init();
     this.menu.hide();
     this.bigmap.show(false);
@@ -258,7 +263,7 @@ class Game {
   }
 
   pause() {
-    if (this.state !== 'play' && this.state !== 'fly') return;
+    if (this.state !== 'play' && this.state !== 'fly' && this.state !== 'train') return;
     this.pausedFrom = this.state;
     if (this.state === 'fly') this.fly.exit();
     this.state = 'paused';
@@ -268,7 +273,7 @@ class Game {
 
   resume() {
     this.menu.hide();
-    this.state = this.pausedFrom === 'fly' ? 'fly' : 'play';
+    this.state = this.pausedFrom === 'fly' || this.pausedFrom === 'train' ? this.pausedFrom : 'play';
     if (this.state === 'fly') this.fly.active = true;
     this.input.clearActions();
     this.resumeTime = performance.now();
@@ -276,6 +281,7 @@ class Game {
 
   // ------------------------------------------------------------ fly mode
   beginFly() {
+    this.endTrain();
     this.audio.init();
     this.menu.hide();
     this.bigmap.show(false);
@@ -324,7 +330,8 @@ class Game {
 
   dropCarAtCamera() {
     const f = this.fly.focus({});
-    const level = this.fly.y < -2 ? this.fly.y : 0;
+    const ground = this.map.terrain.h(this.fly.x, this.fly.z);
+    const level = this.fly.y < ground - 2 ? this.fly.y : this.map.terrain.h(f.x, f.z);
     const g = this.graph;
     const r = g.nearestRoad3D(f.x, f.z, level, 400, (rd) => rd.cls <= RC.LIVING) || g.nearestRoad3D(f.x, f.z, level, 3000);
     if (!r) return;
@@ -347,11 +354,13 @@ class Game {
     const f = this.focusPt;
     if (this.state === 'menu' && this.attractFocus) { f.x = this.attractFocus.x; f.y = 0; f.z = this.attractFocus.z; }
     else if (this.state === 'fly' || (this.state === 'paused' && this.pausedFrom === 'fly')) this.fly.focus(f);
+    else if (this.trainMode.active) this.trainMode.pose(f);
     else { f.x = this.car.x; f.y = this.car.y; f.z = this.car.z; }
     return f;
   }
 
   restart() {
+    if (this.trainMode.active) { this.beginTrain(this.trainMode.run.index); return; }
     const m = this.missions.mode;
     if (m === 'race') this.begin('race', this.missions.race?.def.id || this.modeArg);
     else if (m === 'taxi') this.begin('taxi');
@@ -360,6 +369,7 @@ class Game {
 
   toMenu() {
     this.leaveFly();
+    this.endTrain();
     this.missions.clear();
     this.state = 'menu';
     this.hud.show(false);
@@ -368,11 +378,67 @@ class Game {
   }
 
   showResults(r) {
-    if (this.state !== 'play') return;
+    if (this.state !== 'play' && this.state !== 'train') return;
     this.state = 'results';
     this.hud.setMission(null);
     this.hud.show(false);
     this.menu.show('results', r);
+  }
+
+  // ---------------------------------------------------------- train mode
+  beginTrain(index) {
+    this.leaveFly();
+    this.endTrain();
+    this.audio.init();
+    this.menu.hide();
+    this.bigmap.show(false);
+    this.missions.clear();
+    this.missions.arrow.visible = false;
+    this.state = 'train';
+    this.pausedFrom = null;
+    this.hud.show(true);
+    this.input.clearActions();
+    this.resumeTime = performance.now();
+    this.playerModel.root.visible = false;
+    this.car.vx = this.car.vz = this.car.vF = this.car.vR = this.car.yawRate = 0;
+    this.trainMode.start(index);
+    const r = this.trainMode.run;
+    this.hud.toast(lineName(r.route.ref), 'W power · S brake · Space emergency · drag to look', 3600);
+  }
+
+  // Back to the car (safe to call any time).
+  endTrain() {
+    if (!this.trainMode.active) return;
+    this.trainMode.stop();
+    this.playerModel.root.visible = true;
+    this.hud.setScore(null);
+    this.chase.snap();
+  }
+
+  // Drag on the view to look around (car and train cameras); the view
+  // eases back a moment after you let go.
+  initDragLook(canvas) {
+    let drag = null;
+    const cam = () => (this.state === 'train' ? this.trainMode.camera : this.state === 'play' ? this.chase : null);
+    canvas.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0 || !cam()) return;
+      drag = { id: e.pointerId, x: e.clientX, y: e.clientY };
+      canvas.setPointerCapture?.(e.pointerId);
+    });
+    canvas.addEventListener('pointermove', (e) => {
+      if (!drag || e.pointerId !== drag.id) return;
+      const c = cam();
+      if (c) c.drag((e.clientX - drag.x) * 0.0055, (e.clientY - drag.y) * 0.0045);
+      drag.x = e.clientX; drag.y = e.clientY;
+    });
+    const end = (e) => {
+      if (!drag || e.pointerId !== drag.id) return;
+      drag = null;
+      this.chase.release();
+      this.trainMode.camera.release();
+    };
+    canvas.addEventListener('pointerup', end);
+    canvas.addEventListener('pointercancel', end);
   }
 
   // ---------------------------------------------------------------- loop
@@ -389,13 +455,15 @@ class Game {
 
     const playing = this.state === 'play' && !this.bigmap.open;
     const flying = this.state === 'fly' && !this.bigmap.open;
+    const driving = this.state === 'train' && !this.bigmap.open;
     if (playing) this.updatePlay(dt);
     else if (flying) this.updateFly(dt);
+    else if (driving) this.trainMode.update(dt, this.inputOverride && this.input.enabled ? { ...this.input.state, ...this.inputOverride } : this.input.state);
     else if (this.state === 'menu') this.updateAttract(dt);
 
     // City keeps moving behind the menus and while flying.
     const focus = this.focusPoint();
-    if (this.state === 'menu' || playing || flying) {
+    if (this.state === 'menu' || playing || flying || driving) {
       this.traffic.update(dt, focus);
       this.trains.update(dt, focus);
       this.planes.update(dt, focus);
@@ -408,6 +476,10 @@ class Game {
       this.chase.lookBack = this.input.state.lookBack;
       this.chase.update(dt, this.car, this.collision);
     }
+    if (this.trainMode.active && (driving || this.state === 'paused' || this.state === 'results')) {
+      const t = this.trainMode.run.train, p = this.trains.sample(t, t.head, {});
+      this.trainMode.camera.update(dt, this.trains, t, this.collision, p.y - this.map.terrain.h(p.x, p.z) < -4 && !this.world.openArea.at(p.x, p.z));
+    }
     this.updatePlayerModel();
     this._focusV = (this._focusV || new THREE.Vector3()).set(focus.x, focus.y, focus.z);
     if (this.world.airport) updateLightMaterial(this.world.airport.lightMat, this.camera, this.renderer, this.scene.fog);
@@ -417,17 +489,33 @@ class Game {
     this.updateVisibility(dt);
     this.signs.update(dt, focus.x, focus.z);
     updateLandmarks(this.world.landmarks, now / 1000);
-    if (this.state === 'play' || this.state === 'paused' || this.state === 'results' || this.state === 'fly') this.updateHUD(dt);
+    if (this.state === 'play' || this.state === 'paused' || this.state === 'results' || this.state === 'fly' || this.state === 'train') this.updateHUD(dt);
     if (this.bigmap.open) {
-      const me = this.state === 'fly' ? { x: this.fly.x, z: this.fly.z, heading: this.fly.yaw } : this.car;
-      this.bigmap.draw(me, { ...this.missions.overlays(), cars: this.traffic.positions(), trains: this.trains.positions(), planes: this.planes.positions() });
+      const me = this.state === 'fly' ? { x: this.fly.x, z: this.fly.z, heading: this.fly.yaw } : this.trainMode.active ? this.trainMode.pose() : this.car;
+      const ov = this.trainMode.active ? this.trainMode.overlays() : this.missions.overlays();
+      this.bigmap.draw(me, { ...ov, cars: this.traffic.positions(), trains: this.trains.positions(), planes: this.planes.positions() });
     }
     this.audio.update(this.car, this.effectiveInput || this.input.state, playing && !this.sinking);
-    const ear = this.state === 'fly' ? this.fly : this.car;
+    const ear = this.state === 'fly' ? this.fly : this.trainMode.active ? this.trainMode.pose(this._ear || (this._ear = {})) : this.car;
     this.audio.setRumble(this.state === 'menu' ? 0 : this.trains.rumble(ear.x, ear.z) * (this.state === 'fly' ? Math.max(0, 1 - Math.max(0, this.fly.y) / 120) : 1));
     this.audio.setJet(this.state === 'menu' ? 0 : this.planes.noise(ear.x, ear.y ?? 0, ear.z));
     if (flying) this.audio.setWind(this.fly.speed);
+    this.updateUnderground();
     this.renderer.render(this.scene, this.camera);
+  }
+
+  // Camera in a tunnel (below ground and not under an open cut): dim the
+  // daylight, and draw the ground from below too, so a gap in the tunnel
+  // shows earth rather than the city above (not near a cut, where the ground
+  // over the opening would hide the sky).
+  updateUnderground() {
+    const p = this.camera.position, T = this.map.terrain, open = this.world.openArea;
+    const depth = T.h(p.x, p.z) - p.y;
+    const under = depth > (this.camUnder ? 1.5 : 2.5) && !open.at(p.x, p.z);
+    if (under !== this.camUnder) { this.camUnder = under; this.sky.setUnderground(under); }
+    const solid = under && !open.near(p.x, p.z, 60);
+    const land = this.world.materials.land;
+    if ((land.side === THREE.DoubleSide) !== solid) { land.side = solid ? THREE.DoubleSide : THREE.FrontSide; land.needsUpdate = true; }
   }
 
   handleActions() {
@@ -439,7 +527,8 @@ class Game {
     }
     if (inp.take('mute')) { this.setSetting('sound', !this.settings.sound); this.hud.toast(this.settings.sound ? 'Sound on' : 'Sound off', '', 1200); }
     const flying = this.state === 'fly';
-    if (!playing && !flying) { inp.clearActions(); return; }
+    const driving = this.state === 'train';
+    if (!playing && !flying && !driving) { inp.clearActions(); return; }
     if (inp.take('pause')) {
       if (performance.now() - (this.resumeTime || 0) < 250) return;
       if (this.bigmap.open) this.bigmap.show(false);
@@ -449,9 +538,17 @@ class Game {
     if (inp.take('map')) {
       const open = !this.bigmap.open;
       if (flying && open) this.fly.exit(); // release the mouse for the map
-      this.bigmap.show(open, flying ? this.fly.x : this.car.x, flying ? this.fly.z : this.car.z);
+      const me = flying ? this.fly : driving ? this.trainMode.pose() : this.car;
+      this.bigmap.show(open, me.x, me.z);
     }
     if (this.bigmap.open) { inp.clearActions(); return; }
+    if (driving) {
+      if (inp.take('camera')) this.hud.toast(this.trainMode.camera.cycle(), 'Camera', 1200);
+      if (inp.take('time')) this.cycleTimeOfDay();
+      if (inp.take('fly')) this.hud.toast('Fly mode is in Free Roam', 'Leave the train first (Esc)', 2000);
+      inp.clearActions();
+      return;
+    }
     if (flying) {
       if (!this.fly.active) this.fly.active = true;
       if (inp.take('fly')) this.exitFly(false);
@@ -503,7 +600,7 @@ class Game {
       this.hud.message('Splash!', 'Into the drink', 1500, '#7fc8ff');
     } else {
       const surf = cw.surfaceAt(car.x, car.z);
-      if (surf & SURF.BLDG && car.y > -1 && !car.onDeck) { this.stuckIn = (this.stuckIn || 0) + dt; if (this.stuckIn > 0.4) { this.stuckIn = 0; this.respawn(); } }
+      if (surf & SURF.BLDG && car.y - cw.groundAt(car.x, car.z) > -1 && !car.onDeck) { this.stuckIn = (this.stuckIn || 0) + dt; if (this.stuckIn > 0.4) { this.stuckIn = 0; this.respawn(); } }
       else this.stuckIn = 0;
       this.safeTimer -= dt;
       if (this.safeTimer <= 0 && !car.airborne && (surf & SURF.ROAD || car.onDeck) && car.speed > 1.5) {
@@ -543,7 +640,7 @@ class Game {
     if (!m) return;
     const sinkY = this.sinking ? -Math.min(1.6, this.sinking * 1.1) : 0;
     m.root.position.set(c.x, c.y + sinkY, c.z);
-    m.root.rotation.set((this.sinking ? Math.min(0.25, this.sinking * 0.2) : 0) + c.slopePitch, -c.heading, 0, 'YXZ');
+    m.root.rotation.set((this.sinking ? Math.min(0.25, this.sinking * 0.2) : 0) + c.slopePitch, -c.heading, c.slopeRoll, 'YXZ');
     m.body.rotation.set(c.pitch, 0, c.roll);
     for (const w of m.wheels) {
       if (w.front) w.pivot.rotation.y = -c.steer;
@@ -595,6 +692,15 @@ class Game {
 
   updateHUD(dt) {
     const c = this.car, hud = this.hud;
+    if (this.trainMode.active) {
+      this.trainMode.hud(this.settings.metric);
+      if (this.frame % 2 === 0 || this.fps > 50) {
+        const p = this.trainMode.pose(this._pose || (this._pose = {}));
+        const heading = this.trainMode.camera.mode === 0 ? p.heading + this.trainMode.camera.look.yaw : p.heading;
+        this.minimap.draw(p.x, p.z, heading, this.trainMode.run.train.v, { ...this.trainMode.overlays(), cars: this.traffic.positions(), trains: this.trains.positions(), planes: this.planes.positions() });
+      }
+      return;
+    }
     if (this.state === 'fly' || (this.state === 'paused' && this.pausedFrom === 'fly')) {
       const f = this.fly, metric = this.settings.metric;
       hud.setSpeed(f.speed, metric);
@@ -604,9 +710,12 @@ class Game {
       if (this.locTimer <= 0) {
         this.locTimer = 0.25;
         const p = f.focus({});
-        this.updateLocation(0.25, p.x, p.z, f.y < -2 ? f.y : 0);
+        const T = this.map.terrain;
+        this.updateLocation(0.25, p.x, p.z, f.y < T.h(f.x, f.z) - 2 ? f.y : T.h(p.x, p.z));
       }
-      const alt = metric ? `${Math.round(f.y)} m` : `${Math.round(f.y * 3.281)} ft`;
+      // Height above the ground under the camera.
+      const above = f.y - this.map.terrain.h(f.x, f.z);
+      const alt = metric ? `${Math.round(above)} m` : `${Math.round(above * 3.281)} ft`;
       hud.setMission({
         title: 'Fly mode', sub: `Altitude ${alt}`,
         extra: 'Click and move the mouse to look · WASD fly · Space/Q up and down · Shift fast · wheel speed<br>Enter drops the car here · G returns to the car · M map (click to jump)',
@@ -673,6 +782,10 @@ class Game {
       route: this.missions.route ? this.missions.route.length : 0,
       fly: this.state === 'fly' ? { x: this.fly.x, y: this.fly.y, z: this.fly.z, yaw: this.fly.yaw, speed: this.fly.speed } : null,
       trains: this.trains.trains.map((t) => ({ svc: t.svc.id, v: +t.v.toFixed(1), dwell: t.dwell > 0, cars: t.cars.length })),
+      train: this.trainMode.active ? (() => {
+        const r = this.trainMode.run, t = r.train, p = this.trains.sample(t, t.head, {});
+        return { line: r.line.key, phase: r.phase, next: r.next, stops: r.stops.length, head: t.head, v: t.v, limit: r.limit, x: p.x, y: p.y, z: p.z, rel: p.y - this.map.terrain.h(p.x, p.z), results: r.results, overspeed: r.overspeed, trips: r.trips, mark: r.stops[r.next] ? r.stops[r.next].s : null, time: r.time };
+      })() : null,
       planes: this.planes.stats(),
     };
   }

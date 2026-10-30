@@ -7,9 +7,11 @@ import { RC, AREA, SIDEWALK_W, hasSidewalk, RAIL_NODE } from './mapdata.js';
 import * as MAT from './materials.js';
 import { hash32, nextFrame } from './util.js';
 import { GeoBuilder, rgb, crossY, addPolygon, polyOffsets, ribbon, meshOf, roofPlan } from './geom.js';
-import { buildStructures, segCategory, LIFT } from './structures.js';
+import { buildStructures, addGroundMask, segCategory, LIFT } from './structures.js';
+import { buildRailStructures, RAIL_COVER } from './railworld.js';
 import { buildLandmarks } from './landmarks.js';
 import { buildAirport } from './airport.js';
+import { drapeGeometry } from './terrain.js';
 
 export const LAND_COLOR = 0xb7b2a3;
 const AREA_COLORS = {
@@ -38,9 +40,28 @@ export async function buildWorld(map, graph, scene, progress = () => {}) {
   const play = map.meta.play;
   const wb = map.meta.water;
 
+  // Terrain: map layers are built flat (y = lift above the ground) and draped.
+  const T = map.terrain;
+  const fine = { minX: play.minX - 400, maxX: play.maxX + 400, minZ: play.minZ - 400, maxZ: play.maxZ + 400 };
+  const drape = (geo, ground = null) => drapeGeometry(geo, T, { cell: 20, coarse: 80, fine, ground });
+  // Ribbons already split every 10-15 m (roads, sidewalks, rail): heights only.
+  const drapeRibbon = (geo) => drapeGeometry(geo, T, { slice: false });
+  world.drape = drape;
+  // Inland water that is not cut out of the land (creek mouths across the
+  // coast): sink the ground mesh under it.
+  const sunk = [];
+  map.water.forEach((p, wi) => { if (!map.waterHole[wi]) sunk.push({ rings: p, level: map.waterLevels[wi], bb: ringsBox(p) }); });
+  const underWater = (x, z) => {
+    for (const w of sunk) if (x >= w.bb[0] && x <= w.bb[2] && z >= w.bb[1] && z <= w.bb[3] && inRings(x, z, w.rings)) return w.level - 1.5;
+    return NaN;
+  };
+
   const mats = world.materials;
+  mats.land = MAT.terrainLayer(MAT.makeGroundMaterial());
   mats.ground = MAT.flatLayer(MAT.makeGroundMaterial(), 0);
-  mats.water = MAT.flatLayer(MAT.makeWaterMaterial(), 0);
+  mats.far = MAT.makeGroundMaterial();
+  mats.water = MAT.makeWaterMaterial();
+  mats.bank = MAT.makeFlatProp(0x857f73, { side: THREE.DoubleSide });
   mats.road = MAT.flatLayer(MAT.makeRoadMaterial(), 0);
   mats.sidewalk = MAT.flatLayer(MAT.makeSidewalkMaterial(), 0);
   mats.crosswalk = MAT.flatLayer(MAT.makeCrosswalkMaterial(), 0);
@@ -54,24 +75,43 @@ export async function buildWorld(map, graph, scene, progress = () => {}) {
   mats.roadTunnel = MAT.as3D(MAT.makeRoadMaterial({ tunnel: true }));
   mats.sidewalk3d = MAT.as3D(MAT.makeSidewalkMaterial());
   mats.rail3d = MAT.as3D(MAT.makeRailMaterial());
+  mats.railTunnel = MAT.as3D(MAT.makeRailMaterial({ tunnel: true }));
+  mats.stationUnder = MAT.makeFlatProp(0x8c8981, { emissive: 0x302e2a, side: THREE.DoubleSide });
   mats.tunnel = MAT.makeTunnelMaterial();
 
   // ---------------------------------------------------- base planes
+  // Everything that writes depth goes first: far ground, sea, water bodies
+  // and the land mesh (hills hide what is behind them; tunnels stay hidden).
   {
     const outer = new GeoBuilder({ color: [Uint8Array, 3, true] });
     const S = 40000;
-    addPolygon(outer, [Float32Array.from([-S, S, S, S, S, -S, -S, -S])], 0, LAND_COLOR);
-    add(meshOf(outer.build(), mats.ground, -60));
+    addPolygon(outer, [Float32Array.from([-S, S, S, S, S, -S, -S, -S])], -0.4, LAND_COLOR);
+    add(meshOf(outer.build(), mats.far, -64));
     const sea = new GeoBuilder({});
     sea.pos.p3(wb.minX, 0, wb.minZ); sea.pos.p3(wb.maxX, 0, wb.minZ); sea.pos.p3(wb.maxX, 0, wb.maxZ); sea.pos.p3(wb.minX, 0, wb.maxZ);
     sea.idx.p3(0, 3, 2); sea.idx.p3(0, 2, 1);
-    add(meshOf(sea.build(), mats.water, -55));
+    add(meshOf(sea.build(), mats.water, -63));
   }
   // ------------------------------------------------------- land
   {
     const land = new GeoBuilder({ color: [Uint8Array, 3, true] });
     for (const p of map.land) addPolygon(land, p, 0, LAND_COLOR);
-    add(meshOf(land.build(), mats.ground, -50));
+    add(meshOf(drape(land.build(), underWater), mats.land, -60));
+    // Banks and sea walls: from the edge of the land down under the water.
+    const bank = new GeoBuilder({});
+    const onEdge = (x, z) => x <= wb.minX + 1 || x >= wb.maxX - 1 || z <= wb.minZ + 1 || z >= wb.maxZ - 1;
+    for (const p of map.land) for (const r of p) {
+      const n = r.length / 2;
+      for (let i = 0; i < n; i++) {
+        const j = (i + 1) % n;
+        const ax = r[2 * i], az = r[2 * i + 1], bx = r[2 * j], bz = r[2 * j + 1];
+        if (onEdge(ax, az) && onEdge(bx, bz)) continue;
+        const ya = T.h(ax, az), yb = T.h(bx, bz), lo = Math.min(ya, yb) - 2.2;
+        bank.quad([ax, ya + 0.02, az], [bx, yb + 0.02, bz], [bx, lo, bz], [ax, lo, az]);
+      }
+    }
+    const bg = bank.build();
+    if (bg) add(meshOf(bg, mats.bank, -59, { receive: true }));
   }
   progress(0.05, 'Laying out parks');
   await nextFrame();
@@ -81,52 +121,62 @@ export async function buildWorld(map, graph, scene, progress = () => {}) {
     const piers = new GeoBuilder({ color: [Uint8Array, 3, true] });
     for (const a of map.areas) {
       const col = AREA_COLORS[a.type] ?? 0x999999;
-      addPolygon(a.type === AREA.PIER ? piers : areas, a.rings, 0, col);
+      addPolygon(a.type === AREA.PIER ? piers : areas, a.rings, a.type === AREA.PIER ? 0.05 : 0.04, col);
     }
     for (const p of map.piers) {
       const pc = rgb(AREA_COLORS[AREA.PIER]);
-      ribbon(piers, p.pts, p.width / 2, 0, () => piers.attrs.color.buf.p3(...pc));
+      ribbon(piers, p.pts, p.width / 2, 0.05, () => piers.attrs.color.buf.p3(...pc));
     }
-    add(meshOf(areas.build(), mats.ground, -45));
+    add(meshOf(drape(areas.build()), mats.ground, -45));
+    // Water bodies, each flat at its own surface level.
     const water = new GeoBuilder({});
-    for (const p of map.water) {
+    map.water.forEach((p, wi) => {
+      const level = map.waterLevels[wi];
       const flat = [], holes = [];
       p.forEach((r, k) => { if (k) holes.push(flat.length / 2); for (const v of r) flat.push(v); });
       const tri = earcut(flat, holes.length ? holes : null, 2);
       const base = water.vcount;
-      for (let i = 0; i < flat.length; i += 2) water.pos.p3(flat[i], 0, flat[i + 1]);
+      for (let i = 0; i < flat.length; i += 2) water.pos.p3(flat[i], level, flat[i + 1]);
       for (let i = 0; i < tri.length; i += 3) {
         let a = tri[i], b = tri[i + 1], c = tri[i + 2];
         if (crossY(flat[2 * a], flat[2 * a + 1], flat[2 * b], flat[2 * b + 1], flat[2 * c], flat[2 * c + 1]) < 0) [b, c] = [c, b];
         water.idx.p3(base + a, base + b, base + c);
       }
-    }
-    add(meshOf(water.build(), mats.water, -40));
-    add(meshOf(piers.build(), mats.ground, -38));
+    });
+    add(meshOf(water.build(), mats.water, -62));
+    add(meshOf(drape(piers.build()), mats.ground, -38));
   }
 
+  // Holes in the ground mesh over road and rail cuts (see addGroundMask).
+  const openings = new GeoBuilder({});
   // ------------------------------------------------------- rail
   {
     const rail = new GeoBuilder({ aUV: [Float32Array, 2, false] });
     const rail3 = new GeoBuilder({ aUV: [Float32Array, 2, false] });
+    const rail3t = new GeoBuilder({ aUV: [Float32Array, 2, false] });
     const deck = new GeoBuilder({});
     for (const r of map.rail) {
-      if (!r.ys) { ribbon(rail, r.pts, 1.45, 0, (u, s) => rail.attrs.aUV.buf.p2(u, s)); continue; }
-      ribbon(rail3, r.pts, 1.45, LIFT, (u, s, seg, tb) => tb.attrs.aUV.buf.p2(u, s), null, null, null, r.ys);
+      if (!r.ys) { ribbon(rail, r.pts, 1.45, 0.06, (u, s) => rail.attrs.aUV.buf.p2(u, s)); continue; }
+      const pick = (seg) => (Math.max(r.rels[seg], r.rels[seg + 1]) <= RAIL_COVER ? rail3t : rail3);
+      ribbon(pick, r.pts, 1.45, LIFT, (u, s, seg, tb) => tb.attrs.aUV.buf.p2(u, s), null, null, null, r.ys);
       // simple slab under raised track
       const { ox, oz } = polyOffsets(r.pts);
       for (let i = 0; i + 1 < r.pts.length / 2; i++) {
         const ya = r.ys[i], yb = r.ys[i + 1];
-        if (Math.max(ya, yb) < 0.3) continue;
+        if (Math.max(r.rels[i], r.rels[i + 1]) < 0.3) continue;
         const P = (k, o, y) => [r.pts[2 * k] + ox[k] * o, y, r.pts[2 * k + 1] + oz[k] * o];
         for (const o of [-1.7, 1.7]) deck.quad(P(i, o, ya - 0.9), P(i + 1, o, yb - 0.9), P(i + 1, o, yb + LIFT), P(i, o, ya + LIFT));
         deck.quad(P(i, -1.7, ya - 0.9), P(i + 1, -1.7, yb - 0.9), P(i + 1, 1.7, yb - 0.9), P(i, 1.7, ya - 0.9));
       }
     }
-    add(meshOf(rail.build(), mats.rail, -36));
+    add(meshOf(drapeRibbon(rail.build()), mats.rail, -36));
     addRailPortals(map, add, mats);
     const g3 = rail3.build();
     if (g3) add(meshOf(g3, mats.rail3d, 0));
+    const g3t = rail3t.build();
+    if (g3t) add(meshOf(g3t, mats.railTunnel, 0, { receive: false }));
+    // Subway tunnels, cuts and stations; streets crossing a cut keep it open.
+    world.rail = buildRailStructures(map, mats, add, openings, (x, z) => graph.roadNear(x, z, -1.5, 3, 0.5));
     const gd = deck.build();
     if (gd) add(meshOf(gd, mats.concrete3d, 0, { shadow: true }));
   }
@@ -135,9 +185,9 @@ export async function buildWorld(map, graph, scene, progress = () => {}) {
     const paths = new GeoBuilder({ color: [Uint8Array, 3, true] });
     for (const p of map.paths) {
       const c = rgb(PATH_COLORS[p.cls] ?? PATH_COLORS[0]);
-      ribbon(paths, p.pts, p.width / 2, 0, () => paths.attrs.color.buf.p3(c[0], c[1], c[2]));
+      ribbon(paths, p.pts, p.width / 2, 0.05, () => paths.attrs.color.buf.p3(c[0], c[1], c[2]));
     }
-    add(meshOf(paths.build(), mats.ground, -34));
+    add(meshOf(drapeGeometry(paths.build(), T, { cell: 40, coarse: 80, fine }), mats.ground, -34));
   }
   progress(0.15, 'Paving roads');
   await nextFrame();
@@ -180,7 +230,7 @@ export async function buildWorld(map, graph, scene, progress = () => {}) {
     if (r.oneway) return r.cls <= RC.TRUNK ? 3 : r.lanes >= 2 ? 2 : 0;
     return r.cls <= RC.TRUNK ? 4 : 1;
   };
-  const ny = map.nodeY;
+  const ny = map.nodeY, nr = map.nodeRel;
   {
     const roadAttrs = () => ({ aUV: [Float32Array, 2, false], aRoad: [Float32Array, 4, false], aMark: [Uint8Array, 1, false] });
     const sideAttrs = () => ({ aUV: [Float32Array, 2, false], aSide: [Float32Array, 1, false] });
@@ -191,21 +241,22 @@ export async function buildWorld(map, graph, scene, progress = () => {}) {
     for (const r of order) {
       const base = roadPts(r);
       const baseY = Float32Array.from(r.nodes, (n) => ny[n]);
-      const catOf = (ya, yb) => segCategory(r, ya, yb);
+      const baseRel = Float32Array.from(r.nodes, (n) => nr[n]);
+      const catOf = (ya, yb) => segCategory(r, ya, yb); // relative heights
       const baseCats = [];
-      for (let i = 0; i + 1 < r.nodes.length; i++) baseCats.push(catOf(baseY[i], baseY[i + 1]));
+      for (let i = 0; i + 1 < r.nodes.length; i++) baseCats.push(catOf(baseRel[i], baseRel[i + 1]));
       const { prev, next } = endNeighbours(r);
       const hw = r.width / 2;
       if (hasSidewalk(r)) {
         const sw = (u, s, seg, tb) => { tb.attrs.aUV.buf.p2(u, s); tb.attrs.aSide.buf.p1(hw); };
-        ribbon((i) => (baseCats[i] === 'flat' ? side : null), base, hw + SIDEWALK_W, 0, sw, prev, next);
+        ribbon((i) => (baseCats[i] === 'flat' ? side : null), base, hw + SIDEWALK_W, 0.07, sw, prev, next);
         // Raised sidewalk strips on 3D roads (a full-width ribbon would z-fight the road).
         const strip = (i) => (baseCats[i] === 'flat' ? null : side3);
         emitStrips(strip, base, baseY, hw, hw + SIDEWALK_W, LIFT + 0.12, sw, prev, next);
       }
       // Insert cut points around junctions so paint can stop cleanly.
       const style = markStyle(r);
-      let pts = base, ptsY = baseY, marks = null;
+      let pts = base, ptsY = baseY, ptsRel = baseRel, marks = null;
       if (style) {
         const ns = r.nodes;
         const sAt = [0];
@@ -221,7 +272,7 @@ export async function buildWorld(map, graph, scene, progress = () => {}) {
         const cuts = [];
         for (const [a, b] of zones) { if (a > 0 && a < L) cuts.push(a); if (b > 0 && b < L) cuts.push(b); }
         cuts.sort((a, b) => a - b);
-        const out = [], outY = [];
+        const out = [], outY = [], outRel = [];
         let c = 0;
         for (let i = 0; i < ns.length; i++) {
           if (i > 0) {
@@ -230,15 +281,18 @@ export async function buildWorld(map, graph, scene, progress = () => {}) {
                 const t = (cuts[c] - sAt[i - 1]) / (sAt[i] - sAt[i - 1]);
                 out.push(base[2 * i - 2] + (base[2 * i] - base[2 * i - 2]) * t, base[2 * i - 1] + (base[2 * i + 1] - base[2 * i - 1]) * t);
                 outY.push(baseY[i - 1] + (baseY[i] - baseY[i - 1]) * t);
+                outRel.push(baseRel[i - 1] + (baseRel[i] - baseRel[i - 1]) * t);
               }
               c++;
             }
           }
           out.push(base[2 * i], base[2 * i + 1]);
           outY.push(baseY[i]);
+          outRel.push(baseRel[i]);
         }
         pts = Float32Array.from(out);
         ptsY = Float32Array.from(outY);
+        ptsRel = Float32Array.from(outRel);
         // Mark per segment of the densified polyline.
         marks = [];
         let s = 0;
@@ -250,18 +304,19 @@ export async function buildWorld(map, graph, scene, progress = () => {}) {
         }
       }
       const pick = (i) => {
-        const c = catOf(ptsY[i], ptsY[i + 1]);
+        const c = catOf(ptsRel[i], ptsRel[i + 1]);
         return c === 'flat' ? road : c === 'tunnel' ? roadT : road3;
       };
-      const lifted = Float32Array.from(ptsY, (y, i) => y);
+      // Flat pieces sit just above the ground (draped below); 3D ones at
+      // their world height, lifted clear of the ground mask.
       ribbon(pick, pts, hw, 0, (u, s, seg, tb) => {
         tb.attrs.aUV.buf.p2(u, s);
         tb.attrs.aRoad.buf.p4(hw, r.lanes, style, r.shoulder);
         tb.attrs.aMark.buf.p1(marks ? marks[seg] : 0);
-      }, prev, next, null, liftNonFlat(lifted, (i) => pick(i) !== road));
+      }, prev, next, null, (k, seg) => (pick(seg) === road ? 0.09 : ptsY[k] + LIFT));
     }
-    add(meshOf(side.build(), mats.sidewalk, -32));
-    add(meshOf(road.build(), mats.road, -30));
+    add(meshOf(drapeRibbon(side.build()), mats.sidewalk, -32));
+    add(meshOf(drapeRibbon(road.build()), mats.road, -30));
     const g3 = road3.build();
     if (g3) add(meshOf(g3, mats.road3d, 0));
     const gt = roadT.build();
@@ -274,14 +329,18 @@ export async function buildWorld(map, graph, scene, progress = () => {}) {
     // Any level, not just the nearest road: under a deck that is usually the
     // deck itself (Logan's Departures Level sits right over Arrivals).
     isGroundRoad: (x, z) => graph.roadBelow(x, z, 2, SIDEWALK_W + 1.5),
+    openings,
   });
+  for (const w of world.rail.walls) world.structures.walls.push(w);
+  world.openArea = openingCells(openings);
+  addGroundMask(openings, add);
   // ------------------------------------------------------- airport
-  world.airport = buildAirport(map, add, mats);
+  world.airport = buildAirport(map, add, mats, drape);
   // ---------------------------------------------------- crosswalks
   {
     const cw = new GeoBuilder({ aUV: [Float32Array, 2, false] });
-    for (const c of map.crossings) ribbon(cw, c, 1.5, 0, (u, s) => cw.attrs.aUV.buf.p2(u, s));
-    add(meshOf(cw.build(), mats.crosswalk, -28));
+    for (const c of map.crossings) ribbon(cw, c, 1.5, 0.11, (u, s) => cw.attrs.aUV.buf.p2(u, s));
+    add(meshOf(drapeRibbon(cw.build()), mats.crosswalk, -28));
   }
   progress(0.3, 'Raising buildings');
   await nextFrame();
@@ -319,10 +378,10 @@ export async function buildWorld(map, graph, scene, progress = () => {}) {
     const wc = rgb(bd.color).map((v) => Math.min(255, v * shade));
     const seed = (hsh >> 10) & 255;
     const style = bd.style;
-    const bot = bd.minH;
-    const top = bd.h;
+    const bot = bd.base + bd.minH;
+    const top = bd.base + bd.h;
     const plan = roofPlan(bd);
-    const wallTop = plan.wallTop;
+    const wallTop = bd.base + plan.wallTop;
     const skipWalls = wallsDone.has(bi - 1);
     const col = b.attrs.color.buf, info = b.attrs.aInfo.buf, nrm = b.attrs.normal.buf;
     // walls
@@ -346,7 +405,7 @@ export async function buildWorld(map, graph, scene, progress = () => {}) {
     for (let i = 0; i < n0; i++) { const j = (i + 1) % n0; area += outer[2 * i] * outer[2 * j + 1] - outer[2 * j] * outer[2 * i + 1]; }
     area = Math.abs(area / 2);
     const tagged = plan.kind === 'pitched';
-    const pitched = tagged || (plan.kind === 'flat' && bd.rings.length === 1 && n0 <= 12 && top < 16 && area < 320 && bot < 1 && style === 2 && (hsh >> 20) % 10 < 7);
+    const pitched = tagged || (plan.kind === 'flat' && bd.rings.length === 1 && n0 <= 12 && bd.h < 16 && area < 320 && bd.minH < 1 && style === 2 && (hsh >> 20) % 10 < 7);
     const roofCol = rgb(bd.roof >= 0 ? bd.roof : (pitched ? ROOF_PITCH : ROOF_FLAT)[(hsh >> 4) % 6]);
     if (plan.kind === 'dome') {
       addDomeRoof(b, outer, wallTop, plan.rh, roofCol, seed);
@@ -366,7 +425,7 @@ export async function buildWorld(map, graph, scene, progress = () => {}) {
         b.idx.p3(base + p, base + q, base + s);
       }
       // Bottom face for floating parts (overhangs, skybridges).
-      if (bot > 0.5) {
+      if (bd.minH > 0.5) {
         const base2 = b.vcount;
         for (let i = 0; i < flat.length; i += 2) { b.pos.p3(flat[i], bot, flat[i + 1]); col.p3(wc[0] * 0.7, wc[1] * 0.7, wc[2] * 0.7); info.p2(4, seed); nrm.p3(0, -127, 0); }
         for (let i = 0; i < tri.length; i += 3) {
@@ -393,9 +452,9 @@ export async function buildWorld(map, graph, scene, progress = () => {}) {
   {
     const treeGeo = makeTreeGeometry();
     const byChunk = new Map();
-    const T = map.trees;
-    for (let i = 0; i < T.length; i += 2) {
-      const k = chunkKey(T[i], T[i + 1]);
+    const TR = map.trees;
+    for (let i = 0; i < TR.length; i += 2) {
+      const k = chunkKey(TR[i], TR[i + 1]);
       if (!byChunk.has(k)) byChunk.set(k, []);
       byChunk.get(k).push(i);
     }
@@ -405,12 +464,12 @@ export async function buildWorld(map, graph, scene, progress = () => {}) {
     for (const [, list] of byChunk) {
       const im = new THREE.InstancedMesh(treeGeo, mats.tree, list.length);
       list.forEach((i, k) => {
-        const x = T[i], z = T[i + 1];
+        const x = TR[i], z = TR[i + 1];
         const h = hash32(Math.floor(x * 10) * 73856093 ^ Math.floor(z * 10) * 19349663);
         const s = 0.7 + ((h & 1023) / 1023) * 0.65;
         const sy = s * (0.85 + (((h >> 10) & 255) / 255) * 0.4);
         q.setFromAxisAngle(up, ((h >> 18) & 255) / 255 * Math.PI * 2);
-        im.setMatrixAt(k, m4.compose(p.set(x, 0, z), q, sc.set(s, sy, s)));
+        im.setMatrixAt(k, m4.compose(p.set(x, T.h(x, z), z), q, sc.set(s, sy, s)));
         const g = ((h >> 4) & 255) / 255;
         color.setRGB(0.82 + g * 0.3, 0.9 + g * 0.2, 0.75 + g * 0.2);
         im.setColorAt(k, color);
@@ -440,7 +499,7 @@ export async function buildWorld(map, graph, scene, progress = () => {}) {
       if (lm.x >= minX - 15 && lm.x <= maxX + 15 && lm.z >= minZ - 15 && lm.z <= maxZ + 15) h = Math.max(h, bd.h + 10);
     }
     const label = makeLabel(lm.name);
-    label.position.set(lm.x, Math.min(h, 120), lm.z);
+    label.position.set(lm.x, T.h(lm.x, lm.z) + Math.min(h, 120), lm.z);
     label.userData.landmark = lm;
     world.labels.push(label);
     add(label);
@@ -500,7 +559,7 @@ function addZakimTowers(world, map, add) {
   for (const s of [-1, 1]) {
     const tx = ccx + ax * s * 113, tz = ccz + az * s * 113;
     const apexY = 62 + deckY, topY = 90 + deckY;
-    const footL = V(tx - px * half, 0, tz - pz * half), footR = V(tx + px * half, 0, tz + pz * half);
+    const footL = V(tx - px * half, map.terrain.h(tx - px * half, tz - pz * half), tz - pz * half), footR = V(tx + px * half, map.terrain.h(tx + px * half, tz + pz * half), tz + pz * half);
     const apex = V(tx, apexY, tz);
     beam(footL, apex, 2.6);
     beam(footR, apex, 2.6);
@@ -678,13 +737,6 @@ function makeLabel(text) {
   return s;
 }
 
-// Lift the vertices of non-flat segments by LIFT (keeps 3D roads above the ground mask).
-function liftNonFlat(ys, isNonFlat) {
-  const out = Float32Array.from(ys);
-  for (let i = 0; i + 1 < ys.length; i++) if (isNonFlat(i)) { out[i] = ys[i] + LIFT; out[i + 1] = ys[i + 1] + LIFT; }
-  return out;
-}
-
 // Two strips (left/right) between lateral offsets u0..u1 along a polyline with heights.
 function emitStrips(pick, pts, ys, u0, u1, lift, perVertex, prev, next) {
   const { ox, oz, s, n } = polyOffsets(pts, prev, next);
@@ -702,6 +754,47 @@ function emitStrips(pick, pts, ys, u0, u1, lift, perVertex, prev, next) {
       tb.idx.p3(base, base + 2, base + 3);
     }
   }
+}
+
+// 10 m cells under the openings in the ground: tells an open cut (sky above)
+// from a tunnel.
+function openingCells(b) {
+  const C = 10, cells = new Set(), P = b.pos.a, n = b.pos.n / 3;
+  for (let q = 0; q + 3 < n; q += 4) {
+    let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+    for (let k = q; k < q + 4; k++) {
+      x0 = Math.min(x0, P[3 * k]); x1 = Math.max(x1, P[3 * k]);
+      z0 = Math.min(z0, P[3 * k + 2]); z1 = Math.max(z1, P[3 * k + 2]);
+    }
+    for (let gx = Math.floor(x0 / C); gx <= Math.floor(x1 / C); gx++)
+      for (let gz = Math.floor(z0 / C); gz <= Math.floor(z1 / C); gz++) cells.add(gx * 100003 + gz);
+  }
+  const has = (gx, gz) => cells.has(gx * 100003 + gz);
+  return {
+    at: (x, z) => has(Math.floor(x / C), Math.floor(z / C)),
+    near: (x, z, r) => {
+      const k = Math.ceil(r / C), gx = Math.floor(x / C), gz = Math.floor(z / C);
+      for (let i = -k; i <= k; i++) for (let j = -k; j <= k; j++) if (has(gx + i, gz + j)) return true;
+      return false;
+    },
+  };
+}
+
+function ringsBox(rings) {
+  const r = rings[0];
+  let a = Infinity, b = Infinity, c = -Infinity, d = -Infinity;
+  for (let i = 0; i < r.length; i += 2) { a = Math.min(a, r[i]); c = Math.max(c, r[i]); b = Math.min(b, r[i + 1]); d = Math.max(d, r[i + 1]); }
+  return [a, b, c, d];
+}
+function inRings(x, z, rings) {
+  let inside = false;
+  for (const r of rings) {
+    for (let i = 0, j = r.length - 2; i < r.length; j = i, i += 2) {
+      const zi = r[i + 1], zj = r[j + 1];
+      if ((zi > z) !== (zj > z) && x < ((r[j] - r[i]) * (z - zi)) / (zj - zi) + r[i]) inside = !inside;
+    }
+  }
+  return inside;
 }
 
 // Point-in-water test from the map polygons (sea = outside land, plus rivers/ponds).

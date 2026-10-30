@@ -41,13 +41,14 @@ function patch(mat, key, { uniforms = {}, vPars = '', vMain = '', fPars = '', fM
       }`);
     if (colorVertex !== null) shader.vertexShader = shader.vertexShader.replace('#include <color_vertex>', colorVertex);
     // Flat map layers have no normal attribute; shadows need a valid one.
-    if (constNormal) shader.vertexShader = shader.vertexShader.replace('#include <beginnormal_vertex>', 'vec3 objectNormal = vec3(0.0, 1.0, 0.0);');
+    // Layers draped on the terrain carry real normals instead.
+    if (constNormal && !mat.userData.terrainNormals) shader.vertexShader = shader.vertexShader.replace('#include <beginnormal_vertex>', 'vec3 objectNormal = vec3(0.0, 1.0, 0.0);');
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', `#include <common>\nuniform float uTime;\nuniform float uNight;\nvarying vec3 vWPos;\n${HASH}\n${fPars}`)
       .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>\n${fNormal}`)
       .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>\n${fMain}`);
   };
-  mat.customProgramCacheKey = () => key;
+  mat.customProgramCacheKey = () => key + (mat.userData.terrainNormals ? ':n' : '');
   return mat;
 }
 
@@ -67,11 +68,30 @@ const SRGB_COLOR_VERTEX = /* glsl */ `
 `;
 
 // ------------------------------------------------------------------ ground
-// Flat map layers are drawn in a fixed order without writing depth, which
-// avoids z-fighting between coplanar roads, sidewalks, parks and water.
+// Map layers draped on the ground mesh are drawn in a fixed order without
+// writing depth (no z-fighting between coplanar roads, sidewalks and parks),
+// pulled slightly toward the camera so they win against the ground itself,
+// and lit with the terrain's normals.
 export function flatLayer(mat, order) {
   mat.depthWrite = false;
+  mat.polygonOffset = true;
+  mat.polygonOffsetFactor = -1;
+  mat.polygonOffsetUnits = -4;
+  mat.flatShading = false;
   mat.userData.order = order;
+  mat.userData.terrainNormals = true;
+  return mat;
+}
+
+// The ground mesh itself: opaque, writes depth (hills hide what is behind
+// them and keep tunnels out of sight), smooth-shaded with terrain normals.
+export function terrainLayer(mat) {
+  mat.depthWrite = true;
+  mat.polygonOffset = true;
+  mat.polygonOffsetFactor = 1;
+  mat.polygonOffsetUnits = 2;
+  mat.flatShading = false;
+  mat.userData.terrainNormals = true;
   return mat;
 }
 
@@ -410,12 +430,12 @@ export function makeCrosswalkMaterial() {
   });
 }
 
-export function makeRailMaterial() {
-  return makeRailMaterialImpl();
-}
-function makeRailMaterialImpl() {
+// uv = (lateral meters from the track centreline, meters along).
+// tunnel: dimmed daylight and lamp pools (subway tunnels).
+export function makeRailMaterial({ tunnel = false } = {}) {
   const m = new THREE.MeshStandardMaterial({ color: 0x6c645c, roughness: 0.95, metalness: 0, flatShading: true });
-  return patch(m, 'rb-rail', {
+  if (tunnel) m.defines = { RB_TUNNEL: '' };
+  return patch(m, tunnel ? 'rb-rail-tunnel' : 'rb-rail', {
     constNormal: true,
     vPars: 'attribute vec2 aUV; varying vec2 vRUV;',
     vMain: 'vRUV = aUV;',
@@ -433,6 +453,12 @@ function makeRailMaterialImpl() {
         diffuseColor.rgb = col;
         metalnessFactor = mix(metalnessFactor, 0.7, rail);
         roughnessFactor = mix(roughnessFactor, 0.35, rail);
+        #ifdef RB_TUNNEL
+          // Tunnel: little daylight, pools of light under the lamps every 6 m.
+          diffuseColor.rgb *= 0.3;
+          float tk = fract(v / 6.0) - 0.5;
+          totalEmissiveRadiance += col * vec3(1.0, 0.85, 0.62) * (0.16 + 0.85 * exp(-tk * tk * 30.0));
+        #endif
       }
     `,
   });

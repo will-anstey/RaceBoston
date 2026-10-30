@@ -246,6 +246,7 @@ export class Planes {
     this.group = new THREE.Group();
     this.group.name = 'planes';
     game.scene.add(this.group);
+    this.elev = 0;
     if (!A || !airport) { this.disabled = true; return; }
     this.graph = new TaxiGraph(A);
     this.center = { x: 0, z: 0 };
@@ -259,6 +260,10 @@ export class Planes {
     let cx = 0, cz = 0;
     for (const r of this.runways) { cx += (r.pts[0][0] + r.pts[r.pts.length - 1][0]) / 2; cz += (r.pts[0][1] + r.pts[r.pts.length - 1][1]) / 2; }
     this.center = { x: cx / this.runways.length, z: cz / this.runways.length };
+    // The simulation runs with y = 0 on the airfield (flattened in the
+    // terrain); the group is lifted to its height in the world.
+    this.elev = game.map.terrain.h(this.center.x, this.center.z);
+    this.group.position.y = this.elev;
     this.ends = new Map();
     for (const r of this.runways) {
       r.ends.forEach((name, e) => {
@@ -679,7 +684,7 @@ export class Planes {
         vt = Math.min(vt, stopAt(p.s + ahead - (p.T.len + q.T.len) / 2 - 18));
       }
     }
-    if (car && Math.abs(car.y - p.y) < 4) {
+    if (car && Math.abs(car.y - this.elev - p.y) < 4) {
       const dx = car.x - p.x, dz = car.z - p.z;
       const ahead = dx * fx + dz * fz, lat = Math.abs(dx * -fz + dz * fx);
       if (ahead > 0 && ahead < 90 && lat < p.T.span / 2 + 3) vt = Math.min(vt, stopAt(p.s + ahead - p.T.len / 2 - 8));
@@ -860,7 +865,7 @@ export class Planes {
     let lv = 0;
     for (const p of this.planes) {
       const thrust = p.state === 'takeoff' || p.state === 'climb' || p.state === 'goaround' ? 1 : p.state === 'approach' ? 0.4 : p.state === 'rollout' ? 0.75 : p.state === 'overfly' ? 0.25 : p.state === 'parked' ? 0.02 : 0.15;
-      const d = Math.hypot(p.x - x, p.y - y, p.z - z);
+      const d = Math.hypot(p.x - x, p.y + this.elev - y, p.z - z);
       lv += thrust / (1 + (d / 260) ** 2);
     }
     return Math.min(1, lv);
@@ -872,7 +877,7 @@ export class Planes {
     const h = car.h, fx = Math.sin(car.heading), fz = -Math.cos(car.heading);
     let hit = 0;
     for (const p of this.planes) {
-      if (p.y > 2 || Math.abs(car.y - p.y) > 3) continue;
+      if (p.y > 2 || Math.abs(car.y - this.elev - p.y) > 3) continue;
       const dx0 = car.x - p.x, dz0 = car.z - p.z;
       if (Math.abs(dx0) > p.T.len || Math.abs(dz0) > p.T.len) continue;
       const ax = Math.sin(p.heading), az = -Math.cos(p.heading);

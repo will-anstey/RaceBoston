@@ -36,7 +36,7 @@ export class StreetSigns {
   }
 
   _place(map, graph, cw) {
-    const nodes = map.nodes, ny = map.nodeY, roads = map.roads;
+    const nodes = map.nodes, ny = map.nodeRel, roads = map.roads;
     const N = nodes.length / 2;
     // Per node: best (lowest class) road per distinct name, at grade only.
     const byNode = new Map();
@@ -95,7 +95,7 @@ export class StreetSigns {
       if (!spot) continue;
       taken.add(ck);
       const [px, pz, a, b] = spot;
-      posts.push({ x: px, z: pz, y: 0, names: [abbreviate(A.name), abbreviate(B.name)], dirs: [Math.atan2(a[0], -a[1]), Math.atan2(b[0], -b[1])] });
+      posts.push({ x: px, z: pz, y: map.terrain.h(px, pz), names: [abbreviate(A.name), abbreviate(B.name)], dirs: [Math.atan2(a[0], -a[1]), Math.atan2(b[0], -b[1])] });
     }
     return posts;
   }

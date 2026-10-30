@@ -128,7 +128,8 @@ export function polyOffsets(pts, prev, next) {
 
 // Ribbon of quads along a polyline. `b` is a builder or a function
 // (segIndex) => builder|null; perVertex(u, s, segIndex, builder) adds
-// attributes; ys (optional) gives a per-point height added to y.
+// attributes; ys (optional) gives a per-point height added to y, as an array
+// or as (pointIndex, segIndex) => height (so segments can differ at a joint).
 export function ribbon(b, pts, hw, y, perVertex, prev, next, segFilter, ys) {
   if (pts.length < 4) return;
   const { ox, oz, s, n } = polyOffsets(pts, prev, next);
@@ -139,7 +140,7 @@ export function ribbon(b, pts, hw, y, perVertex, prev, next, segFilter, ys) {
     if (!tb) continue;
     const base = tb.vcount;
     for (const [k, side] of [[i, -1], [i, 1], [i + 1, 1], [i + 1, -1]]) {
-      tb.pos.p3(pts[2 * k] + ox[k] * hw * side, y + (ys ? ys[k] : 0), pts[2 * k + 1] + oz[k] * hw * side);
+      tb.pos.p3(pts[2 * k] + ox[k] * hw * side, y + (typeof ys === 'function' ? ys(k, i) : ys ? ys[k] : 0), pts[2 * k + 1] + oz[k] * hw * side);
       perVertex(side * hw, s[k], i, tb);
     }
     tb.idx.p3(base, base + 1, base + 2);

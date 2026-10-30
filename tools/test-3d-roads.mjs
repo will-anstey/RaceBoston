@@ -8,7 +8,8 @@ import path from 'node:path';
 import { startServer, launch, shotsDir, sleep } from './browser.mjs';
 
 // Each trip follows a named road from a start point along its legal direction
-// (toward `toward`) for `dist` meters, and must reach the given heights.
+// (toward `toward`) for `dist` meters, and must reach the given heights
+// (minY / maxY: below / above the ground under the car).
 const TRIPS = [
   { name: 'Mass Pike: Back Bay trench + Prudential tunnel', road: 'Massachusetts Turnpike', start: [-2700, 690, 0], toward: [0, 950], dist: 2600, minY: -9 },
   { name: 'I-90 Ted Williams tunnel eastbound', road: 'Massachusetts Turnpike', start: [300, 1000, -7], toward: [2500, 600], dist: 2200, minY: -7 },
@@ -34,7 +35,7 @@ try {
   await page.evaluate(() => { RB.game.setSetting('traffic', 0); RB.game.begin('free'); });
   for (const trip of TRIPS) {
     const r = await page.evaluate(async (trip) => {
-      const g = RB.game, gr = g.graph, ny = g.map.nodeY;
+      const g = RB.game, gr = g.graph, ny = g.map.nodeY, nr = g.map.nodeRel;
       const re = new RegExp(trip.road);
       const roads = g.map.roads;
       // Start: nearest node on the named road, at the hinted height, whose
@@ -54,7 +55,7 @@ try {
       for (const r of roads) {
         if (!re.test(r.name)) continue;
         for (const n of r.nodes) {
-          const d = (gr.nx(n) - trip.start[0]) ** 2 + (gr.nz(n) - trip.start[1]) ** 2 + ((ny[n] - trip.start[2]) * 25) ** 2;
+          const d = (gr.nx(n) - trip.start[0]) ** 2 + (gr.nz(n) - trip.start[1]) ** 2 + ((nr[n] - trip.start[2]) * 25) ** 2;
           if (d < bd && headsToward(n)) { bd = d; a = n; }
         }
       }
@@ -86,7 +87,7 @@ try {
       const pts = path.map((n) => [gr.nx(n), gr.nz(n), ny[n]]);
       const h0 = Math.atan2(pts[1][0] - pts[0][0], -(pts[1][1] - pts[0][1]));
       g.placeCar(pts[0][0], pts[0][1], h0, pts[0][2]);
-      let idx = 0, t = 0, minY = 0, maxY = 0, airT = 0, hits = 0, maxDev = 0, stuck = 0, levelErrT = 0, flight = 0, maxFlight = 0;
+      let idx = 0, t = 0, minY = 0, maxY = 0, minRel = 0, maxRel = 0, airT = 0, hits = 0, maxDev = 0, stuck = 0, levelErrT = 0, flight = 0, maxFlight = 0;
       const events = [];
       return await new Promise((resolve) => {
         const iv = setInterval(() => {
@@ -128,6 +129,8 @@ try {
             if (levelErrT > 0.6 && !events.some((e) => e.startsWith('level'))) events.push(`level @${c.x.toFixed(0)},${c.z.toFixed(0)} car y=${c.y.toFixed(1)} road y=${ry.toFixed(1)} (${g.hud.streetName.textContent})`);
           } else levelErrT = 0;
           minY = Math.min(minY, c.y); maxY = Math.max(maxY, c.y);
+          const rel = c.y - g.map.terrain.h(c.x, c.z);
+          minRel = Math.min(minRel, rel); maxRel = Math.max(maxRel, rel);
           if (c.airborne) { airT += 0.033; flight += 0.033; maxFlight = Math.max(maxFlight, flight); } else flight = 0;
           if (c.impact > 4) { hits++; if (hits < 4) events.push(`hit ${c.impact.toFixed(1)} kind=${c.impactKind} @${c.x.toFixed(0)},${c.z.toFixed(0)} y=${c.y.toFixed(1)} (${g.hud.streetName.textContent})`); }
           if (c.speed < 1 && stuck > 1 && !events.some((e) => e.startsWith('slow'))) events.push(`slow @${c.x.toFixed(0)},${c.z.toFixed(0)} y=${c.y.toFixed(1)} (${g.hud.streetName.textContent})`);
@@ -137,7 +140,8 @@ try {
             g.inputOverride = { brake: 1 };
             resolve({
               done: idx >= pts.length - 2, t: +t.toFixed(1), len: Math.round(gr.pathLength(path)), progress: +(idx / (pts.length - 1)).toFixed(2),
-              minY: +minY.toFixed(1), maxY: +maxY.toFixed(1), routeMinY: Math.min(...pts.map((p) => p[2])), routeMaxY: Math.max(...pts.map((p) => p[2])),
+              minY: +minY.toFixed(1), maxY: +maxY.toFixed(1), minRel: +minRel.toFixed(1), maxRel: +maxRel.toFixed(1),
+              routeMinY: +Math.min(...pts.map((p) => p[2])).toFixed(1), routeMaxY: +Math.max(...pts.map((p) => p[2])).toFixed(1),
               airT: +airT.toFixed(2), maxFlight: +maxFlight.toFixed(2), hits, maxDev: +maxDev.toFixed(1), stuck: stuck > 5, sank: !!g.sinking,
               at: [Math.round(c.x), Math.round(c.z), +c.y.toFixed(1)], street: g.hud.streetName.textContent, events,
             });
@@ -147,7 +151,7 @@ try {
     }, trip);
     // Small hops over crests are fine; long flights mean the car left the road.
     const ok = r.done && !r.sank && r.hits <= 2 && r.maxFlight < 1.0 && r.airT < r.t * 0.04 && !r.events.some((e) => e.startsWith('level')) &&
-      (trip.minY === undefined || r.minY <= trip.minY) && (trip.maxY === undefined || r.maxY >= trip.maxY);
+      (trip.minY === undefined || r.minRel <= trip.minY) && (trip.maxY === undefined || r.maxRel >= trip.maxY);
     if (!ok) failed++;
     console.log(`${ok ? 'PASS' : 'FAIL'}  ${trip.name}: ${JSON.stringify(r)}`);
     await page.screenshot({ path: path.join(shotsDir, `road3d_${TRIPS.indexOf(trip)}.png`) });

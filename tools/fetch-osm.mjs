@@ -91,6 +91,14 @@ const QUERIES = {
       node["public_transport"="stop_position"](${P});
     );
     out body;`,
+  // Station platforms (where they are and how long), for the stations you
+  // stop at in train mode.
+  platforms: `
+    (
+      way["railway"="platform"](${P});
+      relation["railway"="platform"](${P});
+    );
+    out geom;`,
   // Logan Airport: runways, taxiways, aprons, gate lead-in lines and stands.
   aero: `
     (
