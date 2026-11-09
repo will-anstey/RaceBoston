@@ -67,7 +67,12 @@ export class CollisionWorld {
       for (const r of A.runways) s.line(P(r.nodes), r.width / 2 + 7.5, SURF.PAVED);
       for (const w of A.ways) s.line(P(w.nodes), w.kind === 2 ? 26 : w.kind >= 3 ? 30 : w.width / 2, SURF.PAVED);
     }
-    for (const p of map.paths) s.line(p.pts, p.width / 2 + 0.3, SURF.PAVED);
+    // Footbridges over water are decks (world.footbridges): only their ends are paved.
+    const fb = new Map((world.footbridges || []).map((f) => [f.path, f]));
+    map.paths.forEach((p, pi) => {
+      const f = fb.get(pi);
+      for (const pts of f ? [f.before, f.after] : [p.pts]) if (pts.length >= 4) s.line(pts, p.width / 2 + 0.3, SURF.PAVED);
+    });
     const nodes = map.nodes, nr = map.nodeRel;
     // Only at-grade road segments count as "road" at ground level.
     for (const r of map.roads) {
@@ -82,6 +87,7 @@ export class CollisionWorld {
     // Open cuts: there is no ground to stand on here.
     for (const q of st.footprints) s.polygon([Float32Array.from([q[0][0], q[0][2], q[1][0], q[1][2], q[2][0], q[2][2], q[3][0], q[3][2]])], SURF.CUT);
     this._tmp = { t: 0, x: 0, z: 0 };
+    this.ice = null;   // RiverIce, set by the game
   }
 
   surfaceAt(x, z) { return this.surface.get(x, z); }
@@ -89,12 +95,38 @@ export class CollisionWorld {
   // Ground (terrain) height; over water this is the water surface.
   groundAt(x, z) { return this.terrain.h(x, z); }
 
-  // Water only counts at its surface (not on decks, in cuts or in tunnels).
+  // Water only counts at its surface (not on decks, in cuts or in tunnels),
+  // and not where it has frozen hard (ice.js).
   isWater(x, z, y = 0, onDeck = false) {
     const dy = y - this.terrain.h(x, z);
     if (onDeck || dy > 0.6 || dy < -0.6) return false;
+    if (!this.isWaterSurface(x, z)) return false;
+    return !(this.ice && this.ice.solidAt(x, z));
+  }
+
+  // Open or frozen water at this spot (ignoring height): where boats float.
+  isWaterSurface(x, z) {
     const v = this.surface.get(x, z);
     return (v & SURF.WATER) && !(v & (SURF.ROAD | SURF.PAVED | SURF.CUT)) ? true : false;
+  }
+
+  // Standing on a frozen river or pond (low grip).
+  onIce(x, z) { return !!this.ice && this.ice.level > 0.3 && this.isWaterSurface(x, z) && this.ice.solidAt(x, z); }
+
+  // Lowest road deck over (x, z) above height y (Infinity if none): bridge clearance.
+  deckAbove(x, z, y) {
+    const D = this.decks, s = D.segs, tmp = this._tmp;
+    const n = D.query(x, z, 18);
+    let best = Infinity;
+    for (let k = 0; k < n; k++) {
+      const i = D.result[k];
+      const d2 = segDist2(x, z, s[4 * i], s[4 * i + 1], s[4 * i + 2], s[4 * i + 3], tmp);
+      const w = this.deckHW[i];
+      if (d2 > w * w) continue;
+      const h = D.y0[i] + (D.y1[i] - D.y0[i]) * tmp.t;
+      if (h > y + 0.5 && h < best) best = h;
+    }
+    return best;
   }
 
   outOfBounds(x, z, margin = 0) {

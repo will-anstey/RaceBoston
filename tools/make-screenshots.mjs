@@ -32,6 +32,7 @@ try {
       g.placeCar(best.mx - Math.sin(h) * back, best.mz + Math.cos(h) * back, h, g.map.nodeY[a]);
     };
     RB.game.setSetting('traffic', 30);
+    RB.game.weather.setMode('clear', true);
     RB.game.begin('free');
     RB.game.hud.hintEl.style.opacity = '0';
   });
@@ -175,6 +176,95 @@ try {
   if (cabOk) await page.screenshot({ path: path.join(docs, 'screenshot-subway.jpg'), type: 'jpeg', quality: 86 });
   console.log('wrote screenshot-subway.jpg', cabOk);
   await page.evaluate(() => { const g = RB.game; g.inputOverride = null; g.setSetting('trains', 2); g.begin('free'); });
+  // Weather: a rainy night on Commonwealth Avenue, and Boylston Street under snow.
+  for (const [file, w, tod, road, x, z] of [['screenshot-rain.jpg', 'rain', 'night', '^Commonwealth Avenue$', -1500, 250], ['screenshot-snow.jpg', 'snow', 'day', '^Boylston Street$', -900, 640]]) {
+    await page.evaluate((w, tod, road, x, z) => {
+      const g = RB.game;
+      g.inputOverride = null;
+      g.setSetting('tod', tod);
+      g.weather.setMode(w, true);
+      g.chase.mode = 0;
+      placeOn(road, x, z, false);
+      g.inputOverride = { throttle: 0.55 };
+    }, w, tod, road, x, z);
+    await sleep(3500);
+    await page.screenshot({ path: path.join(docs, file), type: 'jpeg', quality: 86 });
+    console.log('wrote', file);
+  }
+  await page.evaluate(() => { const g = RB.game; g.weather.setMode('clear', true); g.setSetting('tod', 'day'); });
+  // The Head of the Charles: an eight closing on the Weeks Footbridge, spectators on the bridge.
+  await page.evaluate(() => {
+    const g = RB.game;
+    g.inputOverride = null;
+    g.ice.setLevel(0);
+    g.beginBoat({ race: 'hoc-eight' });
+    const bm = g.boatMode, r = bm.race, C = bm.course, m = C.marks.find((x) => /Weeks/.test(x.name));
+    r.countdown = 0;
+    window._shotS = m.s + 150;
+    const p = bm.path.at(window._shotS, 0, {});
+    bm.body.reset(p.x, p.z, Math.atan2(-p.tx, p.tz), g.map.terrain.h(p.x, p.z));
+    r.t0 = 0; r.next = C.marks.indexOf(m); r.sPrev = window._shotS;
+    bm.camera.mode = 0;
+    bm.camera.snap();
+    // Steer up the river line.
+    clearInterval(window._ab);
+    window._ab = setInterval(() => {
+      const b = bm.body;
+      if (!b) return;
+      const pr = bm.path.project(b.x, b.z, window._shotS, {}), t = bm.path.at(pr.s - 40, 0, {});
+      window._shotS = pr.s;
+      let e = Math.atan2(t.x - b.x, -(t.z - b.z)) - b.heading;
+      while (e > Math.PI) e -= 2 * Math.PI; while (e < -Math.PI) e += 2 * Math.PI;
+      g.inputOverride = { throttle: 1, steer: Math.max(-1, Math.min(1, e * 2.5 - b.yawRate * 0.8)) };
+    }, 50);
+  });
+  await sleep(6500);
+  await page.screenshot({ path: path.join(docs, 'screenshot-hocr.jpg'), type: 'jpeg', quality: 86 });
+  console.log('wrote screenshot-hocr.jpg');
+  // The Icebreaker Ferry: passengers boarding at Magazine Beach.
+  const ferryOk = await page.evaluate(async () => {
+    const g = RB.game, wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    clearInterval(window._ab);
+    g.inputOverride = null;
+    g.setSetting('tod', 'day');
+    g.beginBoat({ ferry: 'ferry-bu' });
+    const f = g.boatMode.ferry;
+    for (let i = 0; i < 60 && !f.started; i++) await wait(250);
+    // Moor at the landing with the most people waiting, and catch them walking aboard.
+    const d = f.docks.filter((x) => f._pickupsAt(x).length).sort((a, c) => f._pickupsAt(c).length - f._pickupsAt(a).length)[0] || f.docks[1];
+    const b = g.boatMode.body, h = Math.atan2(d.ax, -d.az), fx = Math.sin(h), fz = -Math.cos(h), rx = -fz, rz = fx;
+    const A = f._dockPt(d, 1, 2 + 2), sgn = d.nx * rx + d.nz * rz < 0 ? 1 : -1;
+    b.x = A.x - fx * 1.9 - rx * sgn * 3.45; b.z = A.z - fz * 1.9 - rz * sgn * 3.45; b.heading = h; b.vx = b.vz = 0;
+    for (let i = 0; i < 80 && !(f.moor && f.moor.stage === 'on'); i++) await wait(250);
+    await wait(2600);
+    return !!f.moor;
+  });
+  await page.screenshot({ path: path.join(docs, 'screenshot-ferry.jpg'), type: 'jpeg', quality: 86 });
+  console.log('wrote screenshot-ferry.jpg', ferryOk);
+  await page.evaluate(() => RB.game.begin('free'));
+  // A frozen Charles with an icebreaker at work below the Longfellow.
+  await page.evaluate(() => {
+    const g = RB.game;
+    clearInterval(window._ab);
+    g.inputOverride = null;
+    g.begin('free');
+    g.weather.setMode('snow', true);
+    g.ice.setLevel(1);
+  });
+  await sleep(9000);
+  const ib = await page.evaluate(() => {
+    const g = RB.game, b = g.boats.list.find((x) => x.type === 'icebreaker');
+    if (!b) return false;
+    g.beginFly();
+    g.fly.x = b.x - b.fx * 70 + -b.fz * 28; g.fly.z = b.z - b.fz * 70 + b.fx * 28; g.fly.y = b.y + 24;
+    g.fly.yaw = Math.atan2(b.x - g.fly.x, -(b.z - g.fly.z)); g.fly.pitch = -0.27;
+    g.hud.show(false);
+    return true;
+  });
+  await sleep(2500);
+  if (ib) await page.screenshot({ path: path.join(docs, 'screenshot-icebreaker.jpg'), type: 'jpeg', quality: 86 });
+  console.log('wrote screenshot-icebreaker.jpg', ib);
+  await page.evaluate(() => { const g = RB.game; g.hud.show(true); g.exitFly(false); g.weather.setMode('clear', true); g.ice.setLevel(0); g.begin('free'); });
   // Map with a GPS route across town.
   await page.evaluate(() => {
     const g = RB.game;

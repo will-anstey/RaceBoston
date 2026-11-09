@@ -218,7 +218,8 @@ export function buildPlayerCar(type, color) {
   const root = new THREE.Group();
   const body = new THREE.Group();
   root.add(body);
-  const paint = new THREE.MeshStandardMaterial({ color, roughness: 0.28, metalness: 0.6, envMapIntensity: 1.3 });
+  // Metallic base under a glossy clear coat, like real car paint.
+  const paint = new THREE.MeshPhysicalMaterial({ color, roughness: 0.34, metalness: 0.62, clearcoat: 1, clearcoatRoughness: 0.05, envMapIntensity: 1.35 });
   const head = sharedHead().clone();
   const tail = sharedTail().clone();
   const meshes = [

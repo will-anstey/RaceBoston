@@ -22,6 +22,7 @@ need_tools=0
 [ -f data/boston.json ] || need_tools=1
 [ -f data/terrain.bin ] || need_tools=1
 [ -f vendor/three/three.module.js ] || need_tools=1
+[ -f vendor/three/addons/postprocessing/EffectComposer.js ] || need_tools=1
 
 if [ "$need_tools" = 1 ]; then
   [ -n "$NODE" ] || { echo "Node 18+ is required to fetch dependencies/map data (brew install node)."; exit 1; }
@@ -33,6 +34,15 @@ if [ "$need_tools" = 1 ]; then
     cp node_modules/three/build/three.module.js node_modules/three/build/three.core.js vendor/three/
     cp node_modules/three/LICENSE vendor/three/LICENSE
     cp node_modules/earcut/src/earcut.js vendor/earcut.js
+  fi
+  if [ ! -f vendor/three/addons/postprocessing/EffectComposer.js ]; then
+    mkdir -p vendor/three/addons/postprocessing vendor/three/addons/shaders
+    for f in EffectComposer Pass RenderPass ShaderPass MaskPass UnrealBloomPass OutputPass FXAAPass; do
+      cp "node_modules/three/examples/jsm/postprocessing/$f.js" vendor/three/addons/postprocessing/
+    done
+    for f in CopyShader LuminosityHighPassShader OutputShader FXAAShader; do
+      cp "node_modules/three/examples/jsm/shaders/$f.js" vendor/three/addons/shaders/
+    done
   fi
   if [ "${1:-}" = "--rebuild" ] || [ ! -f data/boston.json ] || [ ! -f data/terrain.bin ]; then
     echo "Downloading OpenStreetMap data and elevation tiles (a few minutes)..."

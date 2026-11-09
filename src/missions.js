@@ -85,8 +85,8 @@ export class Missions {
           gl_Position = projectionMatrix * mv; }`,
       fragmentShader: `uniform vec3 uColor; uniform float uTime; varying vec2 vUv; varying float vEdge;
         void main(){
-          float fade = pow(1.0 - vUv.y, 1.6);
-          float edge = pow(vEdge, 2.5);
+          float fade = pow(max(1.0 - vUv.y, 0.0), 1.6);
+          float edge = pow(max(vEdge, 0.0), 2.5);
           float bands = 0.75 + 0.25 * sin(vUv.y * 60.0 - uTime * 5.0);
           float a = fade * (0.08 + 0.9 * edge) * bands;
           gl_FragColor = vec4(uColor * 1.4, a); }`,

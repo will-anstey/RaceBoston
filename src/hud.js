@@ -216,6 +216,7 @@ function drawOverlays(ctx, o, pxPerM, rot) {
   };
   for (const c of o.cars || []) dot(c[0], c[1], 2.2, '#c7cfdd');
   for (const t of o.trains || []) dot(t[0], t[1], 3.2, '#' + t[2].toString(16).padStart(6, '0'), '#0b1220');
+  for (const b of o.boats || []) dot(b[0], b[1], 2.6, b[2], '#0b1220');
   for (const p of o.planes || []) {
     ctx.save();
     ctx.translate(p[0], p[1]);

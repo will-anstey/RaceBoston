@@ -25,7 +25,8 @@ export function startServer(port = 8123) {
   });
 }
 
-export async function launch({ width = 1280, height = 720, gpu = process.env.GPU || 'metal' } = {}) {
+// uncapped: no frame-rate limit or vsync (and no battery saver), to measure frame cost.
+export async function launch({ width = 1280, height = 720, gpu = process.env.GPU || 'metal', uncapped = false } = {}) {
   const exe = CHROME_PATHS.find((p) => fs.existsSync(p));
   if (!exe) throw new Error('Chrome not found; set CHROME_PATH');
   const args = [
@@ -35,6 +36,9 @@ export async function launch({ width = 1280, height = 720, gpu = process.env.GPU
     '--autoplay-policy=no-user-gesture-required',
     '--no-first-run',
   ];
+  // Chrome's battery saver caps pages at 30 fps on a low battery: keep tests independent of charge.
+  args.push('--disable-features=BatterySaverModeAvailable,HighEfficiencyModeAvailable');
+  if (uncapped) args.push('--disable-frame-rate-limit', '--disable-gpu-vsync');
   if (gpu === 'swiftshader') args.push('--use-angle=swiftshader', '--enable-unsafe-swiftshader');
   else if (gpu === 'metal') args.push('--use-angle=metal', '--enable-unsafe-webgpu');
   const browser = await puppeteer.launch({ executablePath: exe, headless: 'new', args, defaultViewport: { width, height }, protocolTimeout: 900000 });

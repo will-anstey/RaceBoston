@@ -5,6 +5,8 @@ import { loadMap, RC } from './mapdata.js';
 import { RoadGraph } from './roadgraph.js';
 import { buildWorld } from './world.js';
 import { Sky, PRESET_NAMES } from './sky.js';
+import { PostFX } from './post.js';
+import { Weather, WEATHERS, WEATHER_NAMES } from './weather.js';
 import { globalUniforms } from './materials.js';
 import { CollisionWorld, SURF } from './collision.js';
 import { Vehicle, HANDLING } from './vehicle.js';
@@ -16,7 +18,7 @@ import { HUD, MapArt, Minimap, BigMap } from './hud.js';
 import { Missions } from './missions.js';
 import { Traffic } from './traffic.js';
 import { Menu, CARS } from './menu.js';
-import { SkidMarks } from './effects.js';
+import { SkidMarks, TyreSpray, HeadlightBeams } from './effects.js';
 import { StreetSigns } from './signs.js';
 import { updateLandmarks } from './landmarks.js';
 import { Trains } from './trains.js';
@@ -24,24 +26,28 @@ import { TrainMode, lineName } from './trainmode.js';
 import { FlyCam } from './fly.js';
 import { Planes } from './planes.js';
 import { updateLightMaterial } from './airport.js';
+import { RiverIce } from './ice.js';
+import { Boats, BOAT_TYPES } from './boats.js';
+import { BoatMode, BOAT_CAMERAS, REGATTAS } from './boatmode.js';
 import { clamp, smoothstep, loadJSON, saveJSON, nextFrame } from './util.js';
 
 const STEP = 1 / 150;
 const isTouch = matchMedia('(pointer: coarse)').matches;
 const DEFAULT_SETTINGS = {
   quality: isTouch ? 'medium' : 'high', traffic: 26, tod: 'day', metric: false,
-  sound: true, arrow: true, labels: true, car: 'coupe', trains: 2, planes: 2,
+  sound: true, arrow: true, labels: true, car: 'coupe', trains: 2, planes: 2, weather: 'dynamic', boats: 2, boat: 'motor',
 };
+// post: HDR + bloom + grade (msaa 0 = FXAA instead); precip: share of rain / snow drawn.
 const QUALITY = {
-  low: { pr: 1, shadow: 0, trees: 380, draw: 1400 },
-  medium: { pr: 1.25, shadow: 1024, trees: 520, draw: 2000 },
-  high: { pr: 1.75, shadow: 2048, trees: 720, draw: 2700 },
-  ultra: { pr: 2, shadow: 4096, trees: 950, draw: 3300 },
+  low: { pr: 1, shadow: 0, trees: 380, draw: 1400, post: false, msaa: 0, bloom: 0, precip: 0.35, grain: 0 },
+  medium: { pr: 1.25, shadow: 1024, trees: 520, draw: 2000, post: true, msaa: 0, bloom: 0.85, precip: 0.6, grain: 0 },
+  high: { pr: 1.75, shadow: 2048, trees: 720, draw: 2700, post: true, msaa: 4, bloom: 1, precip: 1, grain: 0.02 },
+  ultra: { pr: 2, shadow: 4096, trees: 950, draw: 3300, post: true, msaa: 4, bloom: 1, precip: 1, grain: 0.025 },
 };
 const CITY_OF = {
-  Cambridge: ['Cambridgeport', 'East Cambridge', 'Central Square', 'Inman Square', 'Wellington-Harrington', 'Mid-Cambridge', 'The Port', 'Riverside', 'MIT', 'Kendall Square', 'Cambridge'],
+  Cambridge: ['Cambridgeport', 'East Cambridge', 'Central Square', 'Inman Square', 'Wellington-Harrington', 'Mid-Cambridge', 'The Port', 'Riverside', 'MIT', 'Kendall Square', 'Cambridge', 'Harvard Square', 'Agassiz', 'Baldwin', 'Neighborhood Nine', 'West Cambridge', 'Peabody', 'Avon Hill', 'Observatory Hill', 'Harvard Yard'],
   Somerville: ['East Somerville', 'Union Square', 'Prospect Hill', 'Spring Hill', 'Brickbottom', 'Inner Belt', 'Somerville'],
-  Brookline: ['Brookline Village', 'Pill Hill', 'Brookline'],
+  Brookline: ['Brookline Village', 'Pill Hill', 'Brookline', 'Coolidge Corner', 'North Brookline', 'Longwood', 'Cottage Farm', 'Fisher Hill', 'Aspinwall Hill', 'Corey Hill'],
 };
 const ROAD_KIND = ['Highway', 'Highway', 'Avenue', 'Street', 'Street', 'Side street', 'Lane', 'Service road'];
 
@@ -71,11 +77,14 @@ class Game {
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFShadowMap;
+    renderer.info.autoReset = false;   // count the whole frame (post-processing renders several passes)
     this.scene = new THREE.Scene();
     this.camera = new THREE.PerspectiveCamera(62, window.innerWidth / window.innerHeight, 0.4, 3600);
     this.camera.position.set(0, 200, 400);
     this.sky = new Sky(renderer, this.scene);
     this.sky.setPreset(this.settings.tod);
+    this.post = new PostFX(renderer, this.scene, this.camera);
+    this.look = { sat: 1, contrast: 1, tint: new THREE.Color(1, 1, 1), bloom: 0.3, threshold: 2, vignette: 0.32, lens: 0, aberr: 0, flash: 0, grain: 0 };
     this.applyQuality();
 
     const bar = document.getElementById('load-bar'), txt = document.getElementById('load-text');
@@ -89,6 +98,9 @@ class Game {
     progress(0.85, 'Mapping obstacles');
     await nextFrame();
     this.collision = new CollisionWorld(map, world);
+    // The Charles and the ponds freeze in a cold snap (ice.js).
+    this.ice = new RiverIce(map);
+    this.collision.ice = this.ice;
     this.signs = new StreetSigns(map, graph, this.scene, this.collision);
     progress(0.9, 'Drawing the map');
     await nextFrame();
@@ -97,6 +109,12 @@ class Game {
     this.input = new Input();
     this.audio = new AudioFX();
     this.audio.muted = !this.settings.sound;
+    this.weather = new Weather(this);
+    this.weather.onChange = (type) => this.hud && this.state !== 'menu' && this.hud.toast(WEATHER_NAMES[type], 'Weather', 2400);
+    this.weather.setMode(this.settings.weather, true);
+    if (this.weather.type === 'snow') this.ice.setLevel(1);
+    this.iceWas = this.ice.level;
+    this.weather.density = this.q.precip;
     this.hud = new HUD();
     this.minimap = new Minimap(document.getElementById('minimap'), art);
     this.bigmap = new BigMap(document.getElementById('bigmap'), document.getElementById('bigmap-canvas'), art, map.landmarks);
@@ -115,6 +133,9 @@ class Game {
     this.trainMode = new TrainMode(this);
     this.planes = new Planes(this, world.airport);
     this.planes.setDensity(this.settings.planes);
+    this.boats = new Boats(this);
+    this.boats.setDensity(this.settings.boats);
+    this.boatMode = new BoatMode(this);
     this.fly = new FlyCam(this.camera, canvas, this.input);
     this.fly.terrain = this.map.terrain;
     this.initDragLook(canvas);
@@ -122,6 +143,8 @@ class Game {
     this.menu = new Menu(this);
 
     this.skids = new SkidMarks(this.scene);
+    this.spray = new TyreSpray(this.scene);
+    this.beams = new HeadlightBeams(this.scene);
     // Soft fill light so the player's car reads at night.
     this.carGlow = new THREE.PointLight(0xc8d4ff, 0, 14, 1.6);
     this.scene.add(this.carGlow);
@@ -138,7 +161,12 @@ class Game {
 
     progress(0.96, 'Warming up engines');
     await nextFrame();
+    // Compile for where the scene really renders (the HDR target, if any).
+    const warm = this.boats.warmup();
+    if (this.post.enabled) this.renderer.setRenderTarget(this.post.composer.renderTarget1);
     this.renderer.compile(this.scene, this.camera);
+    this.renderer.setRenderTarget(null);
+    this.boats.coolDown(warm);
     window.addEventListener('resize', () => this.onResize());
     document.addEventListener('visibilitychange', () => { if (document.hidden && (this.state === 'play' || this.state === 'fly')) this.pause(); });
     if (isTouch) document.getElementById('touch').classList.remove('hidden');
@@ -159,13 +187,17 @@ class Game {
     this.renderer.shadowMap.enabled = q.shadow > 0;
     this.sky.shadowExtent = q.shadow >= 4096 ? 170 : 120;
     this.sky.setShadowQuality(q.shadow);
+    this.sky.sun.shadow.radius = q.shadow >= 2048 ? 3 : 1.5;   // softer shadow edges (PCF kernel)
     this.renderer.setSize(window.innerWidth, window.innerHeight);
+    this.post.configure(q);
+    if (this.weather) this.weather.density = q.precip;
   }
 
   applyTimeOfDay() {
     this.sky.setPreset(this.settings.tod);
     const night = this.sky.nightAmount;
     setNightLights(night > 0.3);
+    this.boats?.setNight(night > 0.3);
     this.headlight.intensity = night > 0.3 ? 260 * night : 0;
     if (this.playerModel) this.playerModel.head.emissiveIntensity = night > 0.3 ? 4 : 0.8;
   }
@@ -177,7 +209,9 @@ class Game {
     if (key === 'traffic') this.traffic.setDensity(value);
     if (key === 'trains') this.trains.setDensity(value);
     if (key === 'planes') this.planes.setDensity(value);
+    if (key === 'boats') this.boats.setDensity(value);
     if (key === 'tod') this.applyTimeOfDay();
+    if (key === 'weather') this.weather.setMode(value);
     if (key === 'sound') this.audio.setMuted(!value);
   }
 
@@ -222,24 +256,25 @@ class Game {
     let x = this.car.x, z = this.car.z, h = this.car.heading, y = this.car.y;
     if (useSafe && this.lastSafe) ({ x, z, h, y } = this.lastSafe);
     const r = g.nearestRoad3D(x, z, y, 300, (rd) => rd.cls <= RC.LIVING) || g.nearestRoad3D(x, z, y, 3000);
-    if (r) {
-      const road = this.map.roads[r.road];
-      const a = road.nodes[r.seg], b = road.nodes[r.seg + 1];
-      let hh = Math.atan2(g.nx(b) - g.nx(a), -(g.nz(b) - g.nz(a)));
-      if (!road.oneway && Math.cos(hh - h) < 0) hh += Math.PI;
-      const off = road.oneway ? 0 : Math.min(road.width / 4, 3);
-      x = r.x + Math.cos(hh) * off;
-      z = r.z + Math.sin(hh) * off;
-      h = hh;
-      y = r.y;
-    }
-    this.placeCar(x, z, h, y);
+    if (r) this.placeOnRoad(r, h);
+    else this.placeCar(x, z, h, y);
+  }
+
+  // Put the car on a road found by nearestRoad3D, along it (the way of h if two-way), in the right lane.
+  placeOnRoad(r, h) {
+    const g = this.graph, road = this.map.roads[r.road];
+    const a = road.nodes[r.seg], b = road.nodes[r.seg + 1];
+    let hh = Math.atan2(g.nx(b) - g.nx(a), -(g.nz(b) - g.nz(a)));
+    if (!road.oneway && Math.cos(hh - h) < 0) hh += Math.PI;
+    const off = road.oneway ? 0 : Math.min(road.width / 4, 3);
+    this.placeCar(r.x + Math.cos(hh) * off, r.z + Math.sin(hh) * off, hh, r.y);
   }
 
   onResize() {
     this.camera.aspect = window.innerWidth / window.innerHeight;
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(window.innerWidth, window.innerHeight);
+    this.post.setSize(window.innerWidth, window.innerHeight);
     if (this.bigmap.open) this.bigmap.show(true, this.car.x, this.car.z);
   }
 
@@ -247,6 +282,7 @@ class Game {
   begin(mode, arg) {
     this.leaveFly();
     this.endTrain();
+    this.endBoat();
     this.audio.init();
     this.menu.hide();
     this.bigmap.show(false);
@@ -263,7 +299,7 @@ class Game {
   }
 
   pause() {
-    if (this.state !== 'play' && this.state !== 'fly' && this.state !== 'train') return;
+    if (this.state !== 'play' && this.state !== 'fly' && this.state !== 'train' && this.state !== 'boat') return;
     this.pausedFrom = this.state;
     if (this.state === 'fly') this.fly.exit();
     this.state = 'paused';
@@ -273,7 +309,7 @@ class Game {
 
   resume() {
     this.menu.hide();
-    this.state = this.pausedFrom === 'fly' || this.pausedFrom === 'train' ? this.pausedFrom : 'play';
+    this.state = this.pausedFrom === 'fly' || this.pausedFrom === 'train' || this.pausedFrom === 'boat' ? this.pausedFrom : 'play';
     if (this.state === 'fly') this.fly.active = true;
     this.input.clearActions();
     this.resumeTime = performance.now();
@@ -282,6 +318,7 @@ class Game {
   // ------------------------------------------------------------ fly mode
   beginFly() {
     this.endTrain();
+    this.endBoat();
     this.audio.init();
     this.menu.hide();
     this.bigmap.show(false);
@@ -355,12 +392,14 @@ class Game {
     if (this.state === 'menu' && this.attractFocus) { f.x = this.attractFocus.x; f.y = 0; f.z = this.attractFocus.z; }
     else if (this.state === 'fly' || (this.state === 'paused' && this.pausedFrom === 'fly')) this.fly.focus(f);
     else if (this.trainMode.active) this.trainMode.pose(f);
+    else if (this.boatMode.active) this.boatMode.pose(f);
     else { f.x = this.car.x; f.y = this.car.y; f.z = this.car.z; }
     return f;
   }
 
   restart() {
     if (this.trainMode.active) { this.beginTrain(this.trainMode.run.index); return; }
+    if (this.boatMode.active) { const r = this.boatMode.race, f = this.boatMode.ferry; this.beginBoat(r ? { race: r.def.id } : f ? { ferry: f.route.id } : { type: this.boatMode.type }); return; }
     const m = this.missions.mode;
     if (m === 'race') this.begin('race', this.missions.race?.def.id || this.modeArg);
     else if (m === 'taxi') this.begin('taxi');
@@ -370,6 +409,7 @@ class Game {
   toMenu() {
     this.leaveFly();
     this.endTrain();
+    this.endBoat();
     this.missions.clear();
     this.state = 'menu';
     this.hud.show(false);
@@ -378,7 +418,7 @@ class Game {
   }
 
   showResults(r) {
-    if (this.state !== 'play' && this.state !== 'train') return;
+    if (this.state !== 'play' && this.state !== 'train' && this.state !== 'boat') return;
     this.state = 'results';
     this.hud.setMission(null);
     this.hud.show(false);
@@ -389,6 +429,7 @@ class Game {
   beginTrain(index) {
     this.leaveFly();
     this.endTrain();
+    this.endBoat();
     this.audio.init();
     this.menu.hide();
     this.bigmap.show(false);
@@ -415,11 +456,91 @@ class Game {
     this.chase.snap();
   }
 
+  // ---------------------------------------------------------- on the water
+  // opts: { type } from a dock, { type, at } from the car, { race } for a
+  // regatta, { ferry } for an Icebreaker Ferry shift.
+  beginBoat(opts = {}) {
+    this.leaveFly();
+    this.endTrain();
+    this.endBoat();
+    this.audio.init();
+    this.menu.hide();
+    this.bigmap.show(false);
+    this.missions.clear();
+    this.missions.arrow.visible = false;
+    if (opts.type && !opts.race && !opts.ferry) { this.settings.boat = opts.type; saveJSON('rb.settings', this.settings); }
+    // The ferry runs in a cold snap: the Charles freezes for the shift (the
+    // weather setting comes back afterwards).
+    if (opts.ferry && (this.weather.mode !== 'snow' || this.ice.level < 0.8)) {
+      this.weather.setMode('snow', true);
+      this.ice.setLevel(1);
+      this.iceWas = 1;
+      this.coldSnap = true;
+    }
+    if (!this.boatMode.start(opts)) { this.endColdSnap(); this.hud.toast(opts.ferry ? 'No room for the ferry landings' : 'No river in this map', '', 1800); return; }
+    this.state = 'boat';
+    this.pausedFrom = null;
+    this.hud.show(true);
+    this.input.clearActions();
+    this.resumeTime = performance.now();
+    this.playerModel.root.visible = false;
+    this.car.vx = this.car.vz = this.car.vF = this.car.vR = this.car.yawRate = 0;
+    this.sinking = 0;
+    const T = BOAT_TYPES[this.boatMode.type];
+    if (opts.ferry) this.hud.toast(`Icebreaker Ferry · ${this.boatMode.ferry.route.name}`, this.coldSnap ? 'A cold snap: the Charles has frozen over' : 'Pick up and drop off along the river', 3600);
+    else if (!opts.race) this.hud.toast(T.name, T.row ? 'W row · Shift power ten · S hold water · E go ashore' : T.breaker ? 'W ahead · S astern · A D helm · H horn · E go ashore' : 'W throttle · S reverse · Shift boost · E go ashore', 3400);
+  }
+
+  // After a ferry shift, the weather goes back to the setting.
+  endColdSnap() {
+    if (!this.coldSnap) return;
+    this.coldSnap = false;
+    this.weather.setMode(this.settings.weather);
+  }
+
+  // Back to the car (safe to call any time).
+  endBoat() {
+    if (!this.boatMode.active) return;
+    this.boatMode.stop();
+    this.endColdSnap();
+    this.playerModel.root.visible = true;
+    this.input.enabled = true;
+    this.audio.setHull(0);
+    this.hud.setScore(null);
+    this.chase.snap();
+  }
+
+  // E in a boat: step ashore onto the nearest road (or across the ice, frozen in).
+  goAshore() {
+    const bm = this.boatMode, b = bm.body;
+    const r = bm.findShore(bm.frozenIn > 2);
+    if (!r) { this.hud.toast('Too far from the bank', 'Steer in close to the shore and press E', 1800); return; }
+    const h = b.heading;
+    if (bm.race) this.missions.clear();
+    this.endBoat();
+    this.state = 'play';
+    this.missions.startFree();
+    this.placeOnRoad(r, h);
+    this.input.clearActions();
+    this.hud.toast('Back on dry land', 'E beside the water to take a boat out again', 2200);
+  }
+
+  // E in the car, stopped by the water: launch the last boat you used.
+  takeBoat() {
+    const c = this.car, type = BOAT_TYPES[this.settings.boat] ? this.settings.boat : 'motor';
+    if (this.missions.mode !== 'free') { this.hud.toast('Boats are in Free Roam', 'Finish or quit the race first', 2000); return; }
+    if (c.speed > 6) { this.hud.toast('Stop by the water first', 'Then press E to take a boat out', 1600); return; }
+    const at = this.boatMode.findLaunch(c.x, c.z, c.heading, type);
+    if (!at && this.ice.level > 0.4) { this.hud.toast('The water here is frozen', 'Try an icebreaker channel, the harbor, or wait for a thaw', 2400); return; }
+    if (!at) { this.hud.toast('No open water here', 'Stop beside the river or the harbor and press E', 2000); return; }
+    this.beginBoat({ type, at });
+  }
+
   // Drag on the view to look around (car and train cameras); the view
   // eases back a moment after you let go.
   initDragLook(canvas) {
     let drag = null;
-    const cam = () => (this.state === 'train' ? this.trainMode.camera : this.state === 'play' ? this.chase : null);
+    const cam = () => (this.state === 'train' ? this.trainMode.camera : this.state === 'boat' ? this.boatMode.camera : this.state === 'play' ? this.chase : null);
     canvas.addEventListener('pointerdown', (e) => {
       if (e.button !== 0 || !cam()) return;
       drag = { id: e.pointerId, x: e.clientX, y: e.clientY };
@@ -436,6 +557,7 @@ class Game {
       drag = null;
       this.chase.release();
       this.trainMode.camera.release();
+      this.boatMode.camera.release();
     };
     canvas.addEventListener('pointerup', end);
     canvas.addEventListener('pointercancel', end);
@@ -447,6 +569,7 @@ class Game {
     const dt = Math.min(0.05, Math.max(0, (now - this.last) / 1000));
     this.last = now;
     this.fps += (1 / Math.max(dt, 1e-3) - this.fps) * 0.05;
+    this.renderer.info.reset();
     this.frame++;
     globalUniforms.uTime.value = now / 1000;
     this.input.update(dt);
@@ -456,21 +579,27 @@ class Game {
     const playing = this.state === 'play' && !this.bigmap.open;
     const flying = this.state === 'fly' && !this.bigmap.open;
     const driving = this.state === 'train' && !this.bigmap.open;
+    const boating = this.state === 'boat' && !this.bigmap.open;
     if (playing) this.updatePlay(dt);
+    else if (boating) this.boatMode.update(dt, this.inputOverride && this.input.enabled ? { ...this.input.state, ...this.inputOverride } : this.input.state);
     else if (flying) this.updateFly(dt);
     else if (driving) this.trainMode.update(dt, this.inputOverride && this.input.enabled ? { ...this.input.state, ...this.inputOverride } : this.input.state);
     else if (this.state === 'menu') this.updateAttract(dt);
 
     // City keeps moving behind the menus and while flying.
     const focus = this.focusPoint();
-    if (this.state === 'menu' || playing || flying || driving) {
+    if (this.state === 'menu' || playing || flying || driving || boating) {
       this.traffic.update(dt, focus);
       this.trains.update(dt, focus);
       this.planes.update(dt, focus);
+      this.boats.update(dt, focus, this.camera);
     }
+    this.ice.update(dt, this.weather);
+    this.iceNews();
     if (playing) {
       this.trains.collidePlayer(this.car);
       this.planes.collidePlayer(this.car);
+      this.boats.collideCar(this.car);
       if (this.car.impact > this.frameImpact) this.frameImpact = this.car.impact;
       this.handleImpacts(dt);
       this.chase.lookBack = this.input.state.lookBack;
@@ -489,19 +618,61 @@ class Game {
     this.updateVisibility(dt);
     this.signs.update(dt, focus.x, focus.z);
     updateLandmarks(this.world.landmarks, now / 1000);
-    if (this.state === 'play' || this.state === 'paused' || this.state === 'results' || this.state === 'fly' || this.state === 'train') this.updateHUD(dt);
+    if (this.state === 'play' || this.state === 'paused' || this.state === 'results' || this.state === 'fly' || this.state === 'train' || this.state === 'boat') this.updateHUD(dt);
     if (this.bigmap.open) {
-      const me = this.state === 'fly' ? { x: this.fly.x, z: this.fly.z, heading: this.fly.yaw } : this.trainMode.active ? this.trainMode.pose() : this.car;
-      const ov = this.trainMode.active ? this.trainMode.overlays() : this.missions.overlays();
-      this.bigmap.draw(me, { ...ov, cars: this.traffic.positions(), trains: this.trains.positions(), planes: this.planes.positions() });
+      const me = this.state === 'fly' ? { x: this.fly.x, z: this.fly.z, heading: this.fly.yaw } : this.trainMode.active ? this.trainMode.pose() : this.boatMode.active ? this.boatMode.pose() : this.car;
+      const ov = this.trainMode.active ? this.trainMode.overlays() : this.boatMode.active ? this.boatMode.overlays() : this.missions.overlays();
+      this.bigmap.draw(me, { ...ov, cars: this.traffic.positions(), trains: this.trains.positions(), planes: this.planes.positions(), boats: this.boats.positions() });
     }
-    this.audio.update(this.car, this.effectiveInput || this.input.state, playing && !this.sinking);
-    const ear = this.state === 'fly' ? this.fly : this.trainMode.active ? this.trainMode.pose(this._ear || (this._ear = {})) : this.car;
+    const boat = this.boatMode.active ? this.boatMode.body : null;
+    this.audio.update(boat || this.car, this.effectiveInput || this.input.state, (playing && !this.sinking) || (boating && boat.T.motor && !boat.T.breaker));
+    if (!boating || !boat.T.breaker) { this.audio.setDiesel(0); this.audio.setShipHorn(false); }
+    this.audio.setHull(boating ? Math.min(1, boat.speed / 12) : 0);
+    this.audio.setCrunch(this.state === 'menu' ? 0 : this.boats.crunch);
+    const ear = this.state === 'fly' ? this.fly : this.trainMode.active ? this.trainMode.pose(this._ear || (this._ear = {})) : this.boatMode.active ? this.boatMode.pose(this._ear || (this._ear = {})) : this.car;
     this.audio.setRumble(this.state === 'menu' ? 0 : this.trains.rumble(ear.x, ear.z) * (this.state === 'fly' ? Math.max(0, 1 - Math.max(0, this.fly.y) / 120) : 1));
     this.audio.setJet(this.state === 'menu' ? 0 : this.planes.noise(ear.x, ear.y ?? 0, ear.z));
     if (flying) this.audio.setWind(this.fly.speed);
     this.updateUnderground();
-    this.renderer.render(this.scene, this.camera);
+    this.updateWeather(dt);
+    this.post.render(dt, this.look);
+  }
+
+  // Weather into the sky, the grade, the sound and the tyres.
+  updateWeather(dt) {
+    const w = this.weather, under = !!this.camUnder;
+    w.update(dt, this.camera, under);
+    const st = w.state;
+    this.sky.setWeather(st, dt);
+    const L = this.sky.look(this.look);
+    // Rain on the glass in the driver's view; a touch of fringing at speed.
+    const cockpit = (this.state === 'play' && this.chase.mode === 2) || (this.trainMode.active && this.trainMode.camera.mode === 0) || (this.state === 'boat' && this.boatMode.camera.mode === 2);
+    L.lens = cockpit && !under ? Math.min(1, st.rain * 1.3) : 0;
+    const fast = this.state === 'play' && this.chase.mode !== 2 ? Math.max(0, Math.min(1, (this.car.speed - 35) / 55)) : 0;
+    L.aberr = fast * 0.014 + (this.car.boosting && this.state === 'play' ? 0.005 : 0);
+    L.vignette = 0.32;
+    L.grain = this.q.grain;
+    this.audio.setRain(this.state === 'menu' ? st.rain * 0.4 : st.rain * (under ? 0.12 : 1));
+    this.car.weatherGrip = w.grip;
+    if (this.state !== 'play') this.spray.points.visible = false;
+    this.boats.light = 0.85 - this.sky.nightAmount * 0.6;
+  }
+
+  // Toasts as the river freezes over and breaks up again.
+  iceNews() {
+    const l = this.ice.level, was = this.iceWas;
+    this.iceWas = l;
+    if (this.state === 'menu' || !this.hud) return;
+    if (was < 0.8 && l >= 0.8) this.hud.toast('The Charles has frozen over', 'Icebreakers are out · drive on the ice at your own risk', 4200);
+    else if (was < 0.15 && l >= 0.15) this.hud.toast('Ice is forming on the Charles', 'Boats are heading in', 3000);
+    else if (was >= 0.5 && l < 0.5) this.hud.toast('The ice is breaking up', 'Keep off the river', 3000);
+  }
+
+  cycleWeather() {
+    const i = WEATHERS.indexOf(this.weather.mode === 'dynamic' ? 'fog' : this.weather.type);
+    const next = WEATHERS[(i + 1) % WEATHERS.length];
+    this.setSetting('weather', next);
+    this.hud.toast(WEATHER_NAMES[next], 'Weather (T)', 1600);
   }
 
   // Camera in a tunnel (below ground and not under an open cut): dim the
@@ -528,7 +699,8 @@ class Game {
     if (inp.take('mute')) { this.setSetting('sound', !this.settings.sound); this.hud.toast(this.settings.sound ? 'Sound on' : 'Sound off', '', 1200); }
     const flying = this.state === 'fly';
     const driving = this.state === 'train';
-    if (!playing && !flying && !driving) { inp.clearActions(); return; }
+    const boating = this.state === 'boat';
+    if (!playing && !flying && !driving && !boating) { inp.clearActions(); return; }
     if (inp.take('pause')) {
       if (performance.now() - (this.resumeTime || 0) < 250) return;
       if (this.bigmap.open) this.bigmap.show(false);
@@ -538,13 +710,28 @@ class Game {
     if (inp.take('map')) {
       const open = !this.bigmap.open;
       if (flying && open) this.fly.exit(); // release the mouse for the map
-      const me = flying ? this.fly : driving ? this.trainMode.pose() : this.car;
+      const me = flying ? this.fly : driving ? this.trainMode.pose() : boating ? this.boatMode.pose() : this.car;
       this.bigmap.show(open, me.x, me.z);
     }
     if (this.bigmap.open) { inp.clearActions(); return; }
+    if (boating) {
+      if (inp.take('camera')) { this.boatMode.camera.cycle(); this.boatMode.camera.resetLook(); this.hud.toast(BOAT_CAMERAS[this.boatMode.camera.mode], 'Camera', 1200); }
+      if (inp.take('time')) this.cycleTimeOfDay();
+      if (inp.take('weather')) this.cycleWeather();
+      if (inp.take('reset') && !(this.boatMode.race && !this.boatMode.race.started)) this.boatMode.reset();
+      if (inp.take('board')) {
+        if (this.boatMode.race && !this.boatMode.race.done) this.hud.toast('Racing!', 'Finish the Head of the Charles first (Esc to quit)', 1800);
+        else if (this.boatMode.ferry && !this.boatMode.ferry.over) this.hud.toast('On shift!', 'Finish the ferry shift first (Esc to quit)', 1800);
+        else this.goAshore();
+      }
+      if (inp.take('fly')) this.hud.toast('Fly mode is in Free Roam', 'Go ashore first (E)', 2000);
+      inp.clearActions();
+      return;
+    }
     if (driving) {
       if (inp.take('camera')) this.hud.toast(this.trainMode.camera.cycle(), 'Camera', 1200);
       if (inp.take('time')) this.cycleTimeOfDay();
+      if (inp.take('weather')) this.cycleWeather();
       if (inp.take('fly')) this.hud.toast('Fly mode is in Free Roam', 'Leave the train first (Esc)', 2000);
       inp.clearActions();
       return;
@@ -554,6 +741,7 @@ class Game {
       if (inp.take('fly')) this.exitFly(false);
       else if (inp.take('confirm') || inp.take('reset')) this.exitFly(true);
       if (inp.take('time')) this.cycleTimeOfDay();
+      if (inp.take('weather')) this.cycleWeather();
       inp.clearActions();
       return;
     }
@@ -564,8 +752,10 @@ class Game {
       return;
     }
     if (inp.take('camera')) { const name = this.chase.cycle(); this.hud.toast(name, 'Camera', 1200); }
+    if (inp.take('board')) this.takeBoat();
     if (inp.take('reset')) { if (!(this.missions.race && !this.missions.race.started)) this.respawn(); }
     if (inp.take('time')) this.cycleTimeOfDay();
+    if (inp.take('weather')) this.cycleWeather();
     inp.clearActions();
   }
 
@@ -585,6 +775,7 @@ class Game {
     this.acc = Math.min(this.acc + dt, STEP * 10);
     while (this.acc >= STEP) {
       this.car.step(STEP, inp, this.collision);
+      this.simTime = (this.simTime || 0) + STEP;   // driving time actually simulated (tests)
       if (this.car.impact > this.frameImpact) { this.frameImpact = this.car.impact; this.frameImpactKind = this.car.impactKind; }
       this.acc -= STEP;
     }
@@ -608,8 +799,28 @@ class Game {
         this.lastSafe = { x: car.x, z: car.z, h: car.heading, y: car.y };
       }
     }
-    this.skids.update(car, !this.sinking && !car.airborne && (car.onDeck || !!(cw.surfaceAt(car.x, car.z) & (SURF.ROAD | SURF.PAVED))));
+    const onRoad = !this.sinking && !car.airborne && (car.onDeck || !!(cw.surfaceAt(car.x, car.z) & (SURF.ROAD | SURF.PAVED)));
+    this.skids.update(car, onRoad);
+    this.spray.update(dt, car, this.camUnder ? 0 : this.weather.wet, onRoad, 0.8 - this.sky.nightAmount * 0.55, this.camera);
     this.missions.update(dt);
+    this.boardHint(dt);
+  }
+
+  // Stopped by the water in free roam: say that E takes a boat out.
+  boardHint(dt) {
+    this.hintTimer = (this.hintTimer || 0) - dt;
+    this.hintCool = Math.max(0, (this.hintCool || 0) - dt);
+    if (this.hintTimer > 0) return;
+    this.hintTimer = 0.7;
+    const c = this.car, cw = this.collision;
+    if (this.missions.mode !== 'free' || c.speed > 3 || this.sinking || this.hintCool > 0) return;
+    let wet = 0;
+    for (let k = 0; k < 8; k++) { const a = (k / 8) * Math.PI * 2; if (cw.isWaterSurface(c.x + Math.cos(a) * 30, c.z + Math.sin(a) * 30)) wet++; }
+    if (!wet || cw.isWaterSurface(c.x, c.z)) return;
+    if (this.boatMode.findLaunch(c.x, c.z, c.heading, this.settings.boat)) {
+      this.hintCool = 40;
+      this.hud.toast(`E · take the ${BOAT_TYPES[this.settings.boat].name.toLowerCase()} out`, 'On the water', 2600);
+    }
   }
 
   handleImpacts(dt) {
@@ -652,12 +863,34 @@ class Game {
     m.tail.emissiveIntensity = braking ? 4 : night ? 1.4 : 0.35;
   }
 
+  // Headlights at night and in rain, snow, fog or a dark overcast.
   updateHeadlight() {
-    const c = this.car;
-    const on = this.sky.nightAmount > 0.3;
+    const c = this.car, night = this.sky.nightAmount > 0.3;
+    const on = night || this.weather.gloomy;
+    this.headlight.intensity = night ? 260 * this.sky.nightAmount : 170;
+    if (this.playerModel) this.playerModel.head.emissiveIntensity = on ? 4 : 0.8;
     this.headlight.visible = on;
-    this.carGlow.visible = on;
+    this.carGlow.visible = night;
+    // Beams in the air: strong in fog, rain and snow, faint on a clear night.
+    const st = this.weather.state, playing = this.state === 'play' || this.state === 'paused' || this.state === 'results';
+    const air = 0.03 * this.sky.nightAmount + 0.32 * st.fog + 0.16 * st.rain + 0.14 * st.snow;
+    this.beams.update(c, on && playing && !this.trainMode.active && !this.boatMode.active ? air * (night ? 1 : 0.4) : 0);
     this.carGlow.intensity = 60 * this.sky.nightAmount;
+    const boat = this.boatMode.active ? this.boatMode.body : null;
+    if (boat) {
+      // On the water the same two lights become the boat's: a deck light (over
+      // the icebreaker's foredeck, where the passengers stand) and a searchlight
+      // from the helm sweeping the water ahead.
+      const T = boat.T, deck = T.breaker ? 4.5 : 0;
+      this.carGlow.position.set(boat.x + boat.fx * deck, boat.y + (T.breaker ? 8 : 3), boat.z + boat.fz * deck);
+      this.carGlow.intensity = (T.breaker ? 55 : 40) * this.sky.nightAmount;
+      if (!on) return;
+      const up = (T.eyeH ?? 1) + 0.6;
+      this.headlight.position.set(boat.x + boat.fx * T.len * 0.2, boat.y + up, boat.z + boat.fz * T.len * 0.2);
+      this.headlight.target.position.set(boat.x + boat.fx * (T.len + 40), boat.y, boat.z + boat.fz * (T.len + 40));
+      this.headlight.target.updateMatrixWorld();
+      return;
+    }
     this.carGlow.position.set(c.x - c.fx * 1.5, c.y + 4.2, c.z - c.fz * 1.5);
     if (!on) return;
     this.headlight.position.set(c.x + c.fx * 2.7, c.y + 0.75, c.z + c.fz * 2.7);
@@ -697,7 +930,15 @@ class Game {
       if (this.frame % 2 === 0 || this.fps > 50) {
         const p = this.trainMode.pose(this._pose || (this._pose = {}));
         const heading = this.trainMode.camera.mode === 0 ? p.heading + this.trainMode.camera.look.yaw : p.heading;
-        this.minimap.draw(p.x, p.z, heading, this.trainMode.run.train.v, { ...this.trainMode.overlays(), cars: this.traffic.positions(), trains: this.trains.positions(), planes: this.planes.positions() });
+        this.minimap.draw(p.x, p.z, heading, this.trainMode.run.train.v, { ...this.trainMode.overlays(), cars: this.traffic.positions(), trains: this.trains.positions(), planes: this.planes.positions(), boats: this.boats.positions() });
+      }
+      return;
+    }
+    if (this.boatMode.active) {
+      const bm = this.boatMode, b = bm.body;
+      bm.hud(this.settings.metric);
+      if (this.frame % 2 === 0 || this.fps > 50) {
+        this.minimap.draw(b.x, b.z, bm.camera.mode === 3 ? bm.camera.heading : b.heading, b.speed * 2, { ...bm.overlays(), cars: this.traffic.positions(), trains: this.trains.positions(), planes: this.planes.positions(), boats: this.boats.positions() });
       }
       return;
     }
@@ -721,7 +962,7 @@ class Game {
         extra: 'Click and move the mouse to look · WASD fly · Space/Q up and down · Shift fast · wheel speed<br>Enter drops the car here · G returns to the car · M map (click to jump)',
       });
       if (this.frame % 2 === 0 || this.fps > 50) {
-        this.minimap.draw(f.x, f.z, f.yaw, Math.min(50, f.speed * 0.4), { ...this.missions.overlays(), cars: this.traffic.positions(), trains: this.trains.positions(), planes: this.planes.positions(), markers: [{ x: c.x, z: c.z, r: 6, color: '#ff4d5a', label: '' }] });
+        this.minimap.draw(f.x, f.z, f.yaw, Math.min(50, f.speed * 0.4), { ...this.missions.overlays(), cars: this.traffic.positions(), trains: this.trains.positions(), planes: this.planes.positions(), boats: this.boats.positions(), markers: [{ x: c.x, z: c.z, r: 6, color: '#ff4d5a', label: '' }] });
       }
       return;
     }
@@ -734,7 +975,7 @@ class Game {
       this.updateLocation(0.25);
     }
     if (this.frame % 2 === 0 || this.fps > 50) {
-      this.minimap.draw(c.x, c.z, this.chase.mode === 3 ? this.chase.heading : c.heading, c.speed, { ...this.missions.overlays(), cars: this.traffic.positions(), trains: this.trains.positions(), planes: this.planes.positions() });
+      this.minimap.draw(c.x, c.z, this.chase.mode === 3 ? this.chase.heading : c.heading, c.speed, { ...this.missions.overlays(), cars: this.traffic.positions(), trains: this.trains.positions(), planes: this.planes.positions(), boats: this.boats.positions() });
     }
   }
 
@@ -773,7 +1014,7 @@ class Game {
     const c = this.car;
     const info = this.renderer.info.render;
     return {
-      state: this.state, mode: this.missions.mode, x: c.x, z: c.z, y: c.y, heading: c.heading, speed: c.speed, vF: c.vF, vR: c.vR,
+      state: this.state, mode: this.missions.mode, sim: this.simTime || 0, x: c.x, z: c.z, y: c.y, heading: c.heading, speed: c.speed, vF: c.vF, vR: c.vR,
       airborne: c.airborne, onDeck: c.onDeck, inCut: c.inCut,
       boost: c.boost, sinking: this.sinking, impact: this.frameImpact, fps: Math.round(this.fps), calls: info.calls, tris: info.triangles,
       street: this.hud.streetName.textContent, area: this.hud.streetArea.textContent, traffic: this.traffic.cars.length,
@@ -787,6 +1028,15 @@ class Game {
         return { line: r.line.key, phase: r.phase, next: r.next, stops: r.stops.length, head: t.head, v: t.v, limit: r.limit, x: p.x, y: p.y, z: p.z, rel: p.y - this.map.terrain.h(p.x, p.z), results: r.results, overspeed: r.overspeed, trips: r.trips, mark: r.stops[r.next] ? r.stops[r.next].s : null, time: r.time };
       })() : null,
       planes: this.planes.stats(),
+      weather: { mode: this.weather.mode, type: this.weather.type, ...this.weather.state, grip: this.weather.grip, post: this.post.enabled, rainOn: this.weather.rain.visible, snowOn: this.weather.snow.visible },
+      ice: { level: this.ice.level, front: this.ice.front, frozen: this.ice.frozen, broken: this.ice.brokenList.length, onIce: !!c.onIce },
+      boats: this.boats.list.map((b) => ({ type: b.type, role: b.role, s: Math.round(b.s), v: +b.v.toFixed(1) })),
+      boat: this.boatMode.active ? (() => {
+        const bm = this.boatMode, b = bm.body, r = bm.race;
+        return { type: bm.type, x: b.x, z: b.z, y: b.y, heading: b.heading, speed: b.speed, vF: b.vF, rate: b.rate, ice: b.iceState, impact: bm.impact || 0, frozenIn: bm.frozenIn,
+          race: r ? { started: r.started, t0: r.t0, time: r.time, penalty: r.penalty, next: r.next, splits: r.splits, done: r.done, s: bm.path.project(b.x, b.z, r.sPrev, {}).s, start: bm.course.start, finish: bm.course.finish } : null,
+          ferry: bm.ferry ? (() => { const f = bm.ferry; return { route: f.route.id, docks: f.docks.length, started: f.started, over: f.over, stage: f.moor ? f.moor.stage : null, aboard: f.aboard.length, waiting: f.groups.reduce((n, gp) => n + gp.people.length, 0), money: f.money, carried: f.carried, clock: f.clock, people: f.people.length }; })() : null };
+      })() : null,
     };
   }
 }

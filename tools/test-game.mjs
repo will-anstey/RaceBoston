@@ -6,6 +6,7 @@
 
 import path from 'node:path';
 import { startServer, launch, shotsDir, sleep } from './browser.mjs';
+import { decodePNG } from './png.mjs';
 
 const server = await startServer(8125);
 const { browser, page, logs } = await launch({ width: 1280, height: 720 });
@@ -26,8 +27,8 @@ try {
   await sleep(1500);
   await shot('t01_menu');
 
-  // ---- free roam start
-  await page.evaluate(() => RB.game.begin('free'));
+  // ---- free roam start (clear weather: Dynamic can start in snow, with the river frozen)
+  await page.evaluate(() => { const g = RB.game; g.setSetting('weather', 'clear'); g.weather.setMode('clear', true); g.ice.setLevel(0); g.begin('free'); });
   await sleep(1200);
   let s = await st();
   check('free roam starts', s.state === 'play' && s.mode === 'free', `street="${s.street}" area="${s.area}"`);
@@ -47,11 +48,11 @@ try {
   s = await st();
   check('steers right', Math.abs(s.heading - h0) > 0.3, `heading change ${(s.heading - h0).toFixed(2)} rad`);
   // ---- braking
-  const vBefore = (await st()).speed;
+  // (1.3 s of simulated driving: a slow frame under load doesn't count against the brakes.)
+  const b0 = await st(), vBefore = b0.speed;
   await drive({ brake: 1 });
-  await sleep(1300);
-  s = await st();
-  check('brakes hard', s.speed < 3, `speed ${vBefore.toFixed(1)} -> ${s.speed.toFixed(2)} m/s in 1.3s`);
+  for (let i = 0; i < 60; i++) { await sleep(50); s = await st(); if (s.sim - b0.sim >= 1.3) break; }
+  check('brakes hard', s.speed < 3, `speed ${vBefore.toFixed(1)} -> ${s.speed.toFixed(2)} m/s in ${(s.sim - b0.sim).toFixed(2)} s`);
   await sleep(1500);
   s = await st();
   check('reverses when holding brake', s.vF < -1, `vF ${s.vF.toFixed(2)}`);
@@ -124,9 +125,9 @@ try {
   });
   if (water) {
     await drive({ throttle: 1 });
-    await sleep(2200);
-    s = await st();
-    const sankOrRespawned = s.sinking > 0;
+    // Watch for the splash (it may come at once, and respawn within 2 s).
+    let sankOrRespawned = false;
+    for (let i = 0; i < 11; i++) { await sleep(200); s = await st(); if (s.sinking > 0) sankOrRespawned = true; }
     await shot('t05_splash');
     await drive(null);
     await sleep(2200);
@@ -456,13 +457,15 @@ try {
     g.placeCar(l.x - 60, l.z + 40, 0.9);
     const seen = new Set(), moved = [];
     const start = new Map();
-    for (let k = 0; k < 25; k++) {
+    // Which services spawn is random: watch until a Red Line train and two moving ones turn up (45 s at most).
+    for (let k = 0; k < 45; k++) {
       await new Promise((r) => setTimeout(r, 1000));
       for (const t of T.trains) {
         seen.add(t.svc.id);
         if (!start.has(t)) start.set(t, t.head);
         else if (t.head - start.get(t) > 30) moved.push(t.svc.id);
       }
+      if (k >= 10 && seen.has('red') && new Set(moved).size >= 2) break;
     }
     return { seen: [...seen], moved: [...new Set(moved)], n: T.trains.length, boxes: T.carBoxes.length / 9 };
   });
@@ -509,14 +512,14 @@ try {
   const backCar = await page.evaluate(() => RB.game.chase.look.yaw);
   check('drag to look around the car (and it eases back)', dragCar.yaw > 0.8 && dragCar.pitch > 0.1 && Math.abs(backCar) < 0.15, `yaw ${dragCar.yaw.toFixed(2)} pitch ${dragCar.pitch.toFixed(2)} rad while dragging, ${backCar.toFixed(2)} rad 4 s after release`);
 
-  // ---- train mode: menu, drive the Red Line from Central to Kendall/MIT
+  // ---- train mode: menu, drive the Red Line from Harvard to Central
   await page.evaluate(() => { RB.game.toMenu(); RB.game.menu.show('lines'); });
   await sleep(400);
   const lineRows = await page.evaluate(() => document.querySelectorAll('#menu [data-act="train"]').length);
   await shot('t17_train_lines');
   const red = await page.evaluate(async () => {
     const { trainLines } = await import('./src/trainmode.js');
-    const l = trainLines(RB.game.map).find((q) => q.ref === 'Red' && q.from === 'Central Square');
+    const l = trainLines(RB.game.map).find((q) => q.ref === 'Red' && q.from === 'Harvard');
     return l ? l.i : -1;
   });
   check('train lines menu', lineRows >= 16 && red >= 0, `${lineRows} lines listed`);
@@ -559,7 +562,7 @@ try {
     if (s.train.results.length) break;
   }
   const leg = s.train && s.train.results[0];
-  check('drives the Red Line underground to Kendall/MIT and stops at the platform', !!leg && !leg.missed && Math.abs(leg.d) < 4 && deepest < -5 && camUnder, leg ? `${leg.name}: stopped ${leg.d.toFixed(1)} m from the mark, deepest ${deepest.toFixed(1)} m below ground, cab camera underground ${camUnder}` : `no stop after ${((Date.now() - tStart) / 1000).toFixed(0)} s`);
+  check('drives the Red Line underground to Central and stops at the platform', !!leg && !leg.missed && Math.abs(leg.d) < 4 && deepest < -5 && camUnder, leg ? `${leg.name}: stopped ${leg.d.toFixed(1)} m from the mark, deepest ${deepest.toFixed(1)} m below ground, cab camera underground ${camUnder}` : `no stop after ${((Date.now() - tStart) / 1000).toFixed(0)} s`);
   check('AI trains run in the tunnels in train mode', sawAI > 0, `${sawAI} AI trains underground`);
   await sleep(1500);
   await shot('t18_train_station');
@@ -656,13 +659,205 @@ try {
   const sweep = await page.evaluate(async () => {
     const g = RB.game, frames = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
     const tried = [];
-    for (const [k, vals] of [['quality', ['low', 'medium', 'ultra', 'high']], ['traffic', [0, 40, 26]], ['trains', [0, 1, 3, 4, 2]], ['planes', [0, 1, 3, 4, 2]], ['metric', [true, false]], ['labels', [false, true]], ['arrow', [false, true]]]) {
+    for (const [k, vals] of [['quality', ['low', 'medium', 'ultra', 'high']], ['traffic', [0, 40, 26]], ['trains', [0, 1, 3, 4, 2]], ['planes', [0, 1, 3, 4, 2]], ['metric', [true, false]], ['labels', [false, true]], ['arrow', [false, true]], ['boats', [0, 1, 3, 2]], ['weather', ['clear', 'cloudy', 'rain', 'storm', 'snow', 'fog', 'dynamic']]]) {
       for (const v of vals) { g.setSetting(k, v); await frames(); tried.push(`${k}=${v}`); }
     }
     for (const c of ['taxi', 'suv', 'coupe']) { g.selectCar(c); await frames(); tried.push('car=' + c); }
     return tried.length;
   });
-  check('settings sweep', sweep === 26, `${sweep} combinations rendered`);
+  check('settings sweep', sweep === 37, `${sweep} combinations rendered`);
+
+  // ---- weather: rain and snow fall, roads get wet / snowy and slippery, T cycles it,
+  // and a rainy night still renders (a NaN in the HDR buffer would black out the frame).
+  const meanBrightness = async () => {
+    const img = decodePNG(await page.screenshot({ type: 'png' }));
+    let sum = 0, n = 0;
+    for (let i = 0; i < img.data.length; i += img.bpp * 97) { sum += img.data[i] + img.data[i + 1] + img.data[i + 2]; n++; }
+    return sum / n / 3;
+  };
+  await page.evaluate(() => { const g = RB.game; g.begin('free'); g.respawn(); g.weather.setMode('rain', true); g.setSetting('tod', 'night'); });
+  await drive({ throttle: 0.6 });
+  await sleep(2500);
+  s = await st();
+  const rainLight = await meanBrightness();
+  await shot('t12b_rain_night');
+  check('rain: falling, wet roads, less grip, post-processing on', s.weather.rainOn && s.weather.wet > 0.9 && s.weather.grip < 0.9 && s.weather.post, `rain drawn ${s.weather.rainOn}, wet ${s.weather.wet.toFixed(2)}, grip x${s.weather.grip.toFixed(2)}, post ${s.weather.post}`);
+  check('rainy night frame renders (no black-out)', rainLight > 8, `mean brightness ${rainLight.toFixed(1)} / 255`);
+  await page.evaluate(() => { RB.game.weather.setMode('snow', true); RB.game.setSetting('tod', 'day'); });
+  await sleep(2000);
+  s = await st();
+  await shot('t12c_snow');
+  check('snow: falling and settled, slippery', s.weather.snowOn && s.weather.cover > 0.9 && s.weather.grip < 0.75, `snow drawn ${s.weather.snowOn}, cover ${s.weather.cover.toFixed(2)}, grip x${s.weather.grip.toFixed(2)}`);
+  await page.keyboard.press('KeyT');
+  await sleep(300);
+  s = await st();
+  check('T cycles the weather', s.weather.mode === 'fog' && s.weather.type === 'fog', `now ${s.weather.mode}`);
+  await page.evaluate(() => RB.game.setSetting('weather', 'clear'));
+  await drive(null);
+
+  // ---- on the water: boats, rowing, the Head of the Charles, river ice
+  await page.evaluate(() => { const g = RB.game; g.setSetting('weather', 'clear'); g.weather.setMode('clear', true); g.ice.setLevel(0); g.setSetting('tod', 'day'); g.begin('free'); });
+  const steerBoat = () => page.evaluate(() => {
+    // Autopilot: steer along the river line (upstream in a race).
+    clearInterval(window._ab);
+    window._ab = setInterval(() => {
+      const g = RB.game, bm = g.boatMode, b = bm.body;
+      if (!b) return;
+      const P = bm.path, pr = P.project(b.x, b.z, window._abS ?? null, {});
+      window._abS = pr.s;
+      const dir = bm.race ? -1 : window._abDir || 1, t = P.at(pr.s + dir * Math.max(25, b.T.len * 2.2), 0, {});
+      let e = Math.atan2(t.x - b.x, -(t.z - b.z)) - b.heading;
+      while (e > Math.PI) e -= 2 * Math.PI; while (e < -Math.PI) e += 2 * Math.PI;
+      g.inputOverride = { throttle: 1, steer: Math.max(-1, Math.min(1, e * 2.5 - b.yawRate * 0.8)) };
+    }, 50);
+  });
+  const onWater = await page.evaluate(() => {
+    const g = RB.game;
+    g.menu.show('water');
+    const rows = document.querySelectorAll('#menu [data-act="regatta"], #menu [data-act="boat"]').length;
+    const ferries = document.querySelectorAll('#menu [data-act="ferry"]').length;
+    g.menu.hide();
+    return { rows, ferries, river: g.boats.path ? g.boats.path.length : 0, course: g.boatMode.course };
+  });
+  check('On the Water menu and the Head of the Charles course', onWater.rows === 7 && onWater.ferries === 3 && onWater.river > 8000 && onWater.course && Math.abs(onWater.course.length - 4828) < 1 && onWater.course.marks.length === 7,
+    `${onWater.rows} race and boat entries, ${onWater.ferries} ferry routes; river ${(onWater.river / 1000).toFixed(1)} km; course ${onWater.course ? onWater.course.marks.map((m) => m.name.split(' ')[0]).join(' > ') : 'none'}`);
+  await page.evaluate(() => { window._abDir = 1; RB.game.beginBoat({ type: 'motor' }); });
+  await steerBoat();
+  await sleep(6000);
+  s = await st();
+  const crews = s.boats.filter((b) => b.role === 'crew').length;
+  check('motorboat: planes off at speed on the Charles', s.state === 'boat' && s.boat && s.boat.speed > 12, `${s.boat && s.boat.speed.toFixed(1)} m/s`);
+  check('crews out rowing on the river', crews >= 3, `${crews} crews, ${s.boats.length} boats in all`);
+  // Steer straight at the bank: the hull stops at the water's edge.
+  const bank = await page.evaluate(async () => {
+    clearInterval(window._ab);
+    const g = RB.game, b = g.boatMode.body, P = g.boatMode.path, pr = P.project(b.x, b.z, null, {}), p = P.at(pr.s, 0, {});
+    // 30 m off the right bank, heading square at it.
+    const q = P.at(pr.s, p.right - 30, {});
+    b.reset(q.x, q.z, Math.atan2(-p.tz, -p.tx), g.map.terrain.h(q.x, q.z));
+    g.inputOverride = { throttle: 1 };
+    g.boatMode.peakImpact = 0;
+    let hit = 0, dry = 0;
+    for (let i = 0; i < 40; i++) {
+      await new Promise((r) => setTimeout(r, 100));
+      hit = Math.max(hit, g.boatMode.peakImpact);
+      if (!g.collision.isWaterSurface(b.x, b.z)) dry++;
+    }
+    g.inputOverride = null;
+    return { hit, dry, speed: b.speed };
+  });
+  check('boats bounce off the bank', bank.hit > 1 && bank.dry === 0, `impact ${bank.hit.toFixed(1)} m/s, ${bank.dry} samples ashore`);
+  await page.evaluate(() => RB.game.beginBoat({ type: 'eight' }));
+  await steerBoat();
+  await sleep(9000);
+  s = await st();
+  await shot('t16_eight');
+  check('rowing an eight: stroke rate and speed', s.boat && s.boat.type === 'eight' && s.boat.rate > 25 && s.boat.speed > 6, `rate ${s.boat && s.boat.rate.toFixed(0)}, ${s.boat && s.boat.speed.toFixed(1)} m/s`);
+  // E by the river takes a boat out; E by the bank goes ashore.
+  const board = await page.evaluate(async () => {
+    clearInterval(window._ab);
+    const g = RB.game, P = g.boats.path, wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    g.inputOverride = null;
+    g.begin('free');
+    for (let s = 7000; s < 8200; s += 25) {
+      const p = P.at(s, 0, {}), q = P.at(s, p.right + 12, {});
+      const road = g.graph.nearestRoad3D(q.x, q.z, g.map.terrain.h(q.x, q.z), 40);
+      if (!road) continue;
+      g.placeOnRoad(road, Math.atan2(p.tx, -p.tz));
+      if (g.boatMode.findLaunch(g.car.x, g.car.z, g.car.heading, 'motor')) break;
+    }
+    g.settings.boat = 'motor';
+    g.input.actions.add('board');
+    await wait(800);
+    const s1 = g.state;
+    g.input.actions.add('board');
+    await wait(800);
+    return { s1, s2: g.state, street: g.hud.streetName.textContent };
+  });
+  check('E takes a boat out and goes ashore', board.s1 === 'boat' && board.s2 === 'play', `${board.s1} -> ${board.s2} on ${board.street}`);
+  // The Head of the Charles: countdown, rolling start, split at a bridge, finish, results.
+  await page.evaluate(() => RB.game.beginBoat({ race: 'hoc-eight' }));
+  s = await st();
+  check('Head of the Charles: countdown with a field of 10', s.boat && s.boat.race && !s.boat.race.started && s.boats.filter((b) => b.role === 'race').length === 9, `${s.boats.filter((b) => b.role === 'race').length} other crews`);
+  await steerBoat();
+  await sleep(9000);
+  s = await st();
+  check('Head of the Charles: over the start line, clock running', s.boat.race.started && s.boat.race.t0 !== null && s.boat.race.time > 1, `race time ${s.boat.race.time.toFixed(1)} s at ${Math.round(s.boat.race.start - s.boat.race.s)} m`);
+  await page.evaluate(() => {
+    const g = RB.game, bm = g.boatMode, r = bm.race, C = bm.course, p = bm.path.at(C.finish + 60, 0, {});
+    bm.body.reset(p.x, p.z, Math.atan2(-p.tx, p.tz), g.map.terrain.h(p.x, p.z));
+    bm.body.vx = bm.body.fx * 9; bm.body.vz = bm.body.fz * 9; bm.body.rate = 32;
+    r.next = C.marks.length - 1; r.sPrev = C.finish + 60; window._abS = C.finish + 60;
+  });
+  await sleep(12000);
+  s = await st();
+  const res = await page.evaluate(() => document.querySelector('#menu').innerText);
+  check('Head of the Charles: finish and standings', s.state === 'results' && /of 10/.test(res), res.split('\n').filter(Boolean).slice(0, 3).join(' / '));
+  await page.evaluate(() => { clearInterval(window._ab); RB.game.inputOverride = null; });
+  // The icebreaker: 60 mph flat out but slow to get going, and too tall for the Harvard Bridge.
+  const ib = await page.evaluate(async () => {
+    const { BoatBody } = await import('./src/boats.js');
+    const env = { cw: { isWaterSurface: () => true, resolveCircle: () => false, deckAbove: () => Infinity, terrain: { h: () => 0 } }, ice: null };
+    const b = new BoatBody('icebreaker'); b.reset(0, 0, 0, 0);
+    let t = 0, t30 = null;
+    while (t < 70) { b.step(1 / 150, { throttle: 1, brake: 0, steer: 0 }, env); t += 1 / 150; if (t30 === null && b.vF * 2.237 >= 30) t30 = t; }
+    const top = b.vF * 2.237;
+    const g = RB.game;
+    g.beginBoat({ type: 'icebreaker' });
+    const bm = g.boatMode, s = bm.body, P = bm.path, p = P.at(7070, 0, {});
+    s.reset(p.x, p.z, Math.atan2(-p.tx, p.tz), g.map.terrain.h(p.x, p.z));
+    s.vx = s.fx * 10; s.vz = s.fz * 10;
+    g.inputOverride = { throttle: 1 };
+    let minS = 1e9;
+    for (let i = 0; i < 140; i++) { await new Promise((r) => setTimeout(r, 100)); minS = Math.min(minS, P.project(s.x, s.z, 7000, {}).s); }
+    g.inputOverride = null;
+    return { top, t30, bow: minS - s.T.len / 2 };
+  });
+  check('icebreaker: 60 mph top speed, slow to accelerate', ib.top > 59 && ib.top < 61 && ib.t30 > 8, `${ib.top.toFixed(1)} mph flat out, 0-30 mph in ${ib.t30.toFixed(1)} s`);
+  check('icebreaker: stopped by a bridge too low for her', ib.bow > 6930, `bow stopped at s ${ib.bow.toFixed(0)} (Harvard Bridge deck at s 6919-6939)`);
+  // Icebreaker Ferry: landings along the reach, passengers walk aboard, get off at their stop and pay.
+  await page.evaluate(() => { RB.game.beginBoat({ ferry: 'ferry-bu' }); });
+  const fy0 = (await st()).boat.ferry;
+  let fy = fy0;
+  for (let i = 0; i < 40 && !fy.started; i++) { await sleep(500); fy = (await st()).boat.ferry; }
+  await shot('t18_ferry');
+  check('Icebreaker Ferry: landings, and the first passengers walk aboard', fy0.docks >= 5 && fy.started && fy.aboard > 0 && fy.people > fy.aboard, `${fy0.docks} landings, ${fy.aboard} aboard, ${fy.people} people about`);
+  await page.evaluate(() => {
+    // Alongside the first group's stop, stopped: the lines go out.
+    const g = RB.game, f = g.boatMode.ferry, b = g.boatMode.body, d = f.aboard[0].grp.dest;
+    const h = Math.atan2(d.ax, -d.az), fx = Math.sin(h), fz = -Math.cos(h), rx = -fz, rz = fx;
+    const A = f._dockPt(d, 1, 2 + 2), sgn = d.nx * rx + d.nz * rz < 0 ? 1 : -1;
+    b.x = A.x - fx * 1.9 - rx * sgn * 3.45; b.z = A.z - fz * 1.9 - rz * sgn * 3.45; b.heading = h; b.vx = b.vz = 0;
+  });
+  for (let i = 0; i < 40 && fy.carried === 0; i++) { await sleep(500); fy = (await st()).boat.ferry; }
+  check('Icebreaker Ferry: dock alongside, passengers get off and pay', fy.carried > 0 && fy.money > 0, `${fy.carried} delivered, $${fy.money.toFixed(2)}`);
+  await page.evaluate(() => RB.game.begin('free'));
+
+  // Ice: snow freezes the Charles, a car can drive on it, icebreakers cut channels you fall through.
+  await page.evaluate(() => { const g = RB.game; g.begin('free'); g.setSetting('weather', 'snow'); g.weather.setMode('snow', true); g.ice.setLevel(0); });
+  await sleep(3000);
+  s = await st();
+  check('snow starts freezing the Charles', s.ice.level > 0.02, `ice level ${s.ice.level.toFixed(3)} after 3 s`);
+  await page.evaluate(() => { const g = RB.game, p = g.boats.path.at(7600, 0, {}); g.ice.setLevel(1); g.placeCar(p.x, p.z, Math.atan2(p.tx, -p.tz)); g.inputOverride = { throttle: 0.5 }; });
+  await sleep(3000);
+  s = await st();
+  await shot('t17_ice');
+  const breakers = s.boats.filter((b) => b.type === 'icebreaker').length;
+  check('drive on the frozen Charles', s.ice.frozen && s.ice.onIce && s.sinking === 0 && s.speed > 2, `on ice ${s.ice.onIce}, speed ${s.speed.toFixed(1)} m/s, splash=${s.sinking > 0}`);
+  check('icebreakers break the ice', breakers >= 1 && s.ice.broken > 50, `${breakers} icebreakers, ${s.ice.broken} cells broken`);
+  const plunge = await page.evaluate(async () => {
+    const g = RB.game, b = g.boats.list.find((x) => x.type === 'icebreaker');
+    if (!b) return null;
+    g.inputOverride = null;
+    const x = b.x - b.fx * (b.T.len / 2 + 2), z = b.z - b.fz * (b.T.len / 2 + 2);
+    const state = g.ice.stateAt(x, z);
+    g.placeCar(x, z, b.heading);
+    await new Promise((r) => setTimeout(r, 900));
+    return { state, sinking: g.sinking };
+  });
+  check('a car falls into an icebreaker channel', plunge && plunge.state !== 'solid' && plunge.sinking > 0, plunge ? `channel ice ${plunge.state}, sinking ${plunge.sinking.toFixed(2)}` : 'no icebreaker');
+  await page.evaluate(() => { const g = RB.game; g.setSetting('weather', 'clear'); g.weather.setMode('clear', true); g.ice.setLevel(0); g.begin('free'); g.respawn(); });
+  await drive(null);
 
   // ---- night + perf
   await page.evaluate(() => RB.game.setSetting('tod', 'night'));

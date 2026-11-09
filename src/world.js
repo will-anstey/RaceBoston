@@ -77,6 +77,7 @@ export async function buildWorld(map, graph, scene, progress = () => {}) {
   mats.rail3d = MAT.as3D(MAT.makeRailMaterial());
   mats.railTunnel = MAT.as3D(MAT.makeRailMaterial({ tunnel: true }));
   mats.stationUnder = MAT.makeFlatProp(0x8c8981, { emissive: 0x302e2a, side: THREE.DoubleSide });
+  mats.stationUnder.userData.noWeather = true;   // underground: no rain or snow
   mats.tunnel = MAT.makeTunnelMaterial();
 
   // ---------------------------------------------------- base planes
@@ -128,22 +129,24 @@ export async function buildWorld(map, graph, scene, progress = () => {}) {
       ribbon(piers, p.pts, p.width / 2, 0.05, () => piers.attrs.color.buf.p3(...pc));
     }
     add(meshOf(drape(areas.build()), mats.ground, -45));
-    // Water bodies, each flat at its own surface level.
-    const water = new GeoBuilder({});
+    // Water bodies, each flat at its own surface level; aIce says what
+    // freezes in a cold snap (the Charles, ponds; see ice.js).
+    const water = new GeoBuilder({ aIce: [Uint8Array, 1, false] });
+    mats.waterIce = MAT.makeWaterMaterial({ ice: true });
     map.water.forEach((p, wi) => {
-      const level = map.waterLevels[wi];
+      const level = map.waterLevels[wi], kind = map.waterKind[wi];
       const flat = [], holes = [];
       p.forEach((r, k) => { if (k) holes.push(flat.length / 2); for (const v of r) flat.push(v); });
       const tri = earcut(flat, holes.length ? holes : null, 2);
       const base = water.vcount;
-      for (let i = 0; i < flat.length; i += 2) water.pos.p3(flat[i], level, flat[i + 1]);
+      for (let i = 0; i < flat.length; i += 2) { water.pos.p3(flat[i], level, flat[i + 1]); water.attrs.aIce.buf.p1(kind); }
       for (let i = 0; i < tri.length; i += 3) {
         let a = tri[i], b = tri[i + 1], c = tri[i + 2];
         if (crossY(flat[2 * a], flat[2 * a + 1], flat[2 * b], flat[2 * b + 1], flat[2 * c], flat[2 * c + 1]) < 0) [b, c] = [c, b];
         water.idx.p3(base + a, base + b, base + c);
       }
     });
-    add(meshOf(water.build(), mats.water, -62));
+    add(meshOf(water.build(), mats.waterIce, -62));
     add(meshOf(drape(piers.build()), mats.ground, -38));
   }
 
@@ -181,13 +184,19 @@ export async function buildWorld(map, graph, scene, progress = () => {}) {
     if (gd) add(meshOf(gd, mats.concrete3d, 0, { shadow: true }));
   }
   // ------------------------------------------------------- paths
+  // Footbridges over water (the Weeks Bridge over the Charles) rise into
+  // arched decks on piers; the rest of each path lies on the ground.
+  world.footbridges = footbridgeProfiles(map, makeWaterTest(map), T);
   {
     const paths = new GeoBuilder({ color: [Uint8Array, 3, true] });
-    for (const p of map.paths) {
+    const fb = new Map(world.footbridges.map((f) => [f.path, f]));
+    map.paths.forEach((p, pi) => {
       const c = rgb(PATH_COLORS[p.cls] ?? PATH_COLORS[0]);
-      ribbon(paths, p.pts, p.width / 2, 0.05, () => paths.attrs.color.buf.p3(c[0], c[1], c[2]));
-    }
+      const f = fb.get(pi);
+      for (const pts of f ? [f.before, f.after] : [p.pts]) if (pts.length >= 4) ribbon(paths, pts, p.width / 2, 0.05, () => paths.attrs.color.buf.p3(c[0], c[1], c[2]));
+    });
     add(meshOf(drapeGeometry(paths.build(), T, { cell: 40, coarse: 80, fine }), mats.ground, -34));
+    if (world.footbridges.length) addFootbridges(world.footbridges, add, mats);
   }
   progress(0.15, 'Paving roads');
   await nextFrame();
@@ -332,6 +341,16 @@ export async function buildWorld(map, graph, scene, progress = () => {}) {
     openings,
   });
   for (const w of world.rail.walls) world.structures.walls.push(w);
+  for (const f of world.footbridges) {
+    const st = world.structures, P = f.pts, Y = f.ys, hw = f.width / 2 + 0.4;
+    for (let i = 0; i + 1 < Y.length; i++) {
+      const ax = P[2 * i], az = P[2 * i + 1], bx = P[2 * i + 2], bz = P[2 * i + 3];
+      st.surfaces.push([ax, az, bx, bz, Y[i], Y[i + 1], hw, hw]);
+      const dx = bx - ax, dz = bz - az, l = Math.hypot(dx, dz) || 1, ox = -dz / l * hw, oz = dx / l * hw;
+      for (const sd of [-1, 1]) st.walls.push([ax + ox * sd, az + oz * sd, bx + ox * sd, bz + oz * sd, Math.min(Y[i], Y[i + 1]) - 0.3, Math.max(Y[i], Y[i + 1]) + 1.1, 2]);
+    }
+    for (const [x, z, r, top] of f.piers) st.pillars.push([x, z, r, top]);
+  }
   world.openArea = openingCells(openings);
   addGroundMask(openings, add);
   // ------------------------------------------------------- airport
@@ -795,6 +814,95 @@ function inRings(x, z, rings) {
     }
   }
   return inside;
+}
+
+// Paths tagged as bridges that cross water: the part over the water (and a
+// few metres of bank) becomes an arch rising to clear boats, carried on
+// piers every ~30 m. Returns [{ path, pts, ys, width, before, after, piers }].
+function footbridgeProfiles(map, waterAt, T) {
+  const out = [], STEP = 4;
+  map.paths.forEach((p, pi) => {
+    if (!p.bridge) return;
+    const src = p.pts, P = [];
+    for (let i = 0; i + 1 < src.length / 2; i++) {
+      const ax = src[2 * i], az = src[2 * i + 1], bx = src[2 * i + 2], bz = src[2 * i + 3];
+      const L = Math.hypot(bx - ax, bz - az), n = Math.max(1, Math.ceil(L / STEP));
+      for (let k = 0; k < n; k++) P.push(ax + ((bx - ax) * k) / n, az + ((bz - az) * k) / n);
+    }
+    P.push(src[src.length - 2], src[src.length - 1]);
+    const m = P.length / 2, wet = [];
+    for (let i = 0; i < m; i++) wet.push(waterAt(P[2 * i], P[2 * i + 1]));
+    let a = wet.indexOf(true), b = wet.lastIndexOf(true);
+    if (a < 0 || b - a < 3) return;
+    a = Math.max(0, a - 2); b = Math.min(m - 1, b + 2);
+    const pts = Float32Array.from(P.slice(2 * a, 2 * b + 2));
+    const n = b - a + 1;
+    let s = [0];
+    for (let i = 1; i < n; i++) s.push(s[i - 1] + Math.hypot(pts[2 * i] - pts[2 * i - 2], pts[2 * i + 1] - pts[2 * i - 1]));
+    const L = s[n - 1];
+    let lvl = Infinity;
+    for (let i = 0; i < n; i++) if (wet[a + i]) lvl = Math.min(lvl, T.h(pts[2 * i], pts[2 * i + 1]));
+    const g0 = T.h(pts[0], pts[1]), g1 = T.h(pts[2 * n - 2], pts[2 * n - 1]);
+    const top = lvl + Math.min(7, Math.max(3.2, 2.5 + L * 0.035));
+    const ys = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      const t = s[i] / L, base = g0 + (g1 - g0) * t, arch = Math.pow(Math.max(0, 1 - (2 * t - 1) ** 2), 0.55);
+      ys[i] = base + Math.max(0, top - base) * arch;
+    }
+    // Piers in the water, between the arches.
+    const piers = [], spans = Math.max(1, Math.round(L / 32));
+    for (let k = 1; k < spans; k++) {
+      const sk = (L * k) / spans;
+      let i = 0;
+      while (i + 2 < n && s[i + 1] < sk) i++;
+      const f = (sk - s[i]) / Math.max(1e-3, s[i + 1] - s[i]);
+      const x = pts[2 * i] + (pts[2 * i + 2] - pts[2 * i]) * f, z = pts[2 * i + 1] + (pts[2 * i + 3] - pts[2 * i + 1]) * f;
+      if (!waterAt(x, z)) continue;
+      const dx = pts[2 * i + 2] - pts[2 * i], dz = pts[2 * i + 3] - pts[2 * i + 1], l = Math.hypot(dx, dz) || 1;
+      const y = ys[i] + (ys[i + 1] - ys[i]) * f;
+      // Two circles across the deck approximate each pier for collisions.
+      const ox = (-dz / l) * (p.width / 2), oz = (dx / l) * (p.width / 2);
+      piers.push([x + ox * 0.5, z + oz * 0.5, 1.3, y - 0.7, dx / l, dz / l, lvl], [x - ox * 0.5, z - oz * 0.5, 1.3, y - 0.7, dx / l, dz / l, lvl]);
+    }
+    out.push({ path: pi, pts, ys, width: p.width, piers, before: Float32Array.from(P.slice(0, 2 * a + 2)), after: Float32Array.from(P.slice(2 * b)) });
+  });
+  return out;
+}
+
+// Deck slab, fascia, railings and piers for the footbridges.
+function addFootbridges(list, add, mats) {
+  const deck = new GeoBuilder({}), rail = new GeoBuilder({});
+  for (const f of list) {
+    const P = f.pts, Y = f.ys, n = Y.length, hw = f.width / 2 + 0.4, th = 0.7;
+    for (let i = 0; i + 1 < n; i++) {
+      const ax = P[2 * i], az = P[2 * i + 1], bx = P[2 * i + 2], bz = P[2 * i + 3];
+      const dx = bx - ax, dz = bz - az, l = Math.hypot(dx, dz) || 1, ox = (-dz / l) * hw, oz = (dx / l) * hw;
+      const ya = Y[i] + 0.06, yb = Y[i + 1] + 0.06;
+      const L = (s, y, d) => [(s ? bx : ax) + ox * d, y, (s ? bz : az) + oz * d];
+      deck.quadFacing(L(0, ya, -1), L(1, yb, -1), L(1, yb, 1), L(0, ya, 1), 0, 1, 0);
+      deck.quadFacing(L(0, ya - th, -1), L(1, yb - th, -1), L(1, yb - th, 1), L(0, ya - th, 1), 0, -1, 0);
+      for (const sd of [-1, 1]) {
+        deck.quadFacing(L(0, ya - th, sd), L(1, yb - th, sd), L(1, yb + 0.35, sd), L(0, ya + 0.35, sd), ox * sd, 0, oz * sd);
+        // Open railing: top rail and a few posts.
+        rail.quad(L(0, ya + 1.0, sd * 0.97), L(1, yb + 1.0, sd * 0.97), L(1, yb + 1.08, sd * 0.97), L(0, ya + 1.08, sd * 0.97), true);
+        rail.quad(L(0, ya + 0.35, sd * 0.97), L(0, ya + 1.0, sd * 0.97), L(0, ya + 1.0, sd * 0.97 - 0.04), L(0, ya + 0.35, sd * 0.97 - 0.04), true);
+      }
+    }
+    for (let k = 0; k < f.piers.length; k += 2) {
+      const [x1, z1, , top, dx, dz, lvl] = f.piers[k], [x2, z2] = f.piers[k + 1];
+      const cx = (x1 + x2) / 2, cz = (z1 + z2) / 2, w = hw + 0.5, d = 1.4;
+      const C = (u, v, y) => [cx + dx * u + -dz * v, y, cz + dz * u + dx * v];
+      const y0 = lvl - 1, y1 = top;
+      deck.quadFacing(C(-d, -w, y0), C(d, -w, y0), C(d, -w, y1), C(-d, -w, y1), dz, 0, -dx);
+      deck.quadFacing(C(-d, w, y0), C(d, w, y0), C(d, w, y1), C(-d, w, y1), -dz, 0, dx);
+      deck.quadFacing(C(-d, -w, y0), C(-d, w, y0), C(-d, w, y1), C(-d, -w, y1), -dx, 0, -dz);
+      deck.quadFacing(C(d, -w, y0), C(d, w, y0), C(d, w, y1), C(d, -w, y1), dx, 0, dz);
+    }
+  }
+  const g = deck.build();
+  if (g) add(meshOf(g, mats.concrete3d, 0, { shadow: true }));
+  const r = rail.build();
+  if (r) add(meshOf(r, mats.railing, 0));
 }
 
 // Point-in-water test from the map polygons (sea = outside land, plus rivers/ponds).

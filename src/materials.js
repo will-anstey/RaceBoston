@@ -6,6 +6,16 @@ import * as THREE from 'three';
 export const globalUniforms = {
   uTime: { value: 0 },
   uNight: { value: 0 },
+  // Weather (weather.js): wet surfaces, snow cover, rain falling, lightning.
+  uWet: { value: 0 }, uSnow: { value: 0 }, uRain: { value: 0 }, uFlash: { value: 0 },
+  // River ice (ice.js): freeze level 0..1, how far the sheet reaches from the
+  // bank (m), and the broken-ice clock (2 s ticks, mod 256).
+  uIce: { value: 0 }, uIceFront: { value: -1 }, uIceEpoch: { value: 0 },
+};
+// Ice state textures over the Charles (filled in by RiverIce).
+export const iceUniforms = {
+  tIceShore: { value: null }, tIceBroken: { value: null },
+  uIceBox: { value: new THREE.Vector4(0, 0, 1, 1) },   // minX, minZ, 1 / width, 1 / depth (m)
 };
 
 const HASH = /* glsl */ `
@@ -22,6 +32,62 @@ float rbNoise(vec2 p) {
 }
 float rbLine(float d, float w, float fw) {
   return 1.0 - smoothstep(w - fw, w + fw, abs(d));
+}
+`;
+
+// Weather on surfaces. Off in tunnels (RB_TUNNEL) and underground materials
+// (userData.noWeather). n is the shaded view-space normal.
+const WEATHER = /* glsl */ `
+float rbUp(vec3 n) { return clamp((vec4(n, 0.0) * viewMatrix).y, 0.0, 1.0); }
+// Standing water collects in the hollows of a slow noise.
+float rbPuddle(vec2 p) {
+  return smoothstep(0.66, 0.82, rbNoise(p * 0.11) * 0.72 + rbNoise(p * 0.53) * 0.28) * smoothstep(0.25, 0.9, uWet);
+}
+// Rain darkens a surface and makes it glossy (puddles nearly mirror-smooth);
+// snow settles on whatever faces up. porous: how dark it gets when wet;
+// snowy: how much snow stays (roads are plowed, wheel tracks less).
+void rbWeather(inout vec3 col, inout float rough, vec3 n, float porous, float puddles, float snowy) {
+#if !defined(RB_TUNNEL) && !defined(RB_NO_WEATHER)
+  if (uWet + uSnow < 0.002) return;
+  vec2 p = vWPos.xz;
+  float up = rbUp(n);
+  if (uWet > 0.001) {
+    float pm = puddles * rbPuddle(p) * up;
+    col *= mix(1.0, 0.55, uWet * porous) * (1.0 - pm * 0.3);
+    rough = mix(rough, mix(min(rough, 0.3), 0.03, pm), uWet * (0.5 + 0.5 * porous));
+  }
+  if (uSnow > 0.001) {
+    float drift = rbNoise(p * 0.33) * 0.5 + rbNoise(p * 1.9) * 0.18;
+    float cover = smoothstep(0.35, 0.85, up) * smoothstep(0.0, 0.35, uSnow * 1.5 - drift) * snowy;
+    col = mix(col, vec3(0.84, 0.87, 0.92), cover);
+    rough = mix(rough, 0.72, cover);
+  }
+#endif
+}
+// Rain rings spreading in the puddles near the camera (puddles < 0: everywhere, for water).
+void rbRipples(inout vec3 n, float puddles) {
+#if !defined(RB_TUNNEL) && !defined(RB_NO_WEATHER)
+  if (uRain < 0.02 || (puddles >= 0.0 && uWet < 0.3)) return;
+  float dist = length(vWPos - cameraPosition);
+  if (dist > 32.0) return;
+  float pm = puddles < 0.0 ? uRain : puddles * rbPuddle(vWPos.xz) * rbUp(n);
+  if (pm < 0.01) return;
+  vec2 q = vWPos.xz * 1.7, g = vec2(0.0);
+  for (int k = 0; k < 2; k++) {
+    vec2 id = floor(q), f = fract(q);
+    float h = rbHash12(id + float(k) * 7.3);
+    if (h < uRain) {
+      float t = fract(uTime * 0.8 + h * 5.0);
+      vec2 dv = f - (vec2(rbHash12(id + 3.1), rbHash12(id + 7.7)) * 0.5 + 0.25);
+      float r = length(dv), e = r - t * 0.45;
+      g += dv / max(r, 1e-3) * sin(e * 70.0) * exp(-e * e * 900.0) * (1.0 - t);
+    }
+    q = q * 1.37 + 0.5;
+  }
+  vec3 wn = (vec4(n, 0.0) * viewMatrix).xyz;
+  wn.xz += g * 0.2 * pm * (1.0 - dist / 32.0);
+  n = normalize((viewMatrix * vec4(normalize(wn), 0.0)).xyz);
+#endif
 }
 `;
 
@@ -43,12 +109,13 @@ function patch(mat, key, { uniforms = {}, vPars = '', vMain = '', fPars = '', fM
     // Flat map layers have no normal attribute; shadows need a valid one.
     // Layers draped on the terrain carry real normals instead.
     if (constNormal && !mat.userData.terrainNormals) shader.vertexShader = shader.vertexShader.replace('#include <beginnormal_vertex>', 'vec3 objectNormal = vec3(0.0, 1.0, 0.0);');
+    if (mat.userData.noWeather) shader.fragmentShader = '#define RB_NO_WEATHER\n' + shader.fragmentShader;
     shader.fragmentShader = shader.fragmentShader
-      .replace('#include <common>', `#include <common>\nuniform float uTime;\nuniform float uNight;\nvarying vec3 vWPos;\n${HASH}\n${fPars}`)
+      .replace('#include <common>', `#include <common>\nuniform float uTime;\nuniform float uNight;\nuniform float uWet, uSnow, uRain, uFlash;\nvarying vec3 vWPos;\n${HASH}\n${WEATHER}\n${fPars}`)
       .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>\n${fNormal}`)
       .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>\n${fMain}`);
   };
-  mat.customProgramCacheKey = () => key + (mat.userData.terrainNormals ? ':n' : '');
+  mat.customProgramCacheKey = () => key + (mat.userData.terrainNormals ? ':n' : '') + (mat.userData.noWeather ? ':dry' : '');
   return mat;
 }
 
@@ -107,15 +174,44 @@ export function makeGroundMaterial() {
         float fine = rbHash12(floor(vWPos.xz * 1.5));
         float fineAmt = 1.0 - smoothstep(0.2, 0.9, fw);
         diffuseColor.rgb *= 0.9 + big * 0.18 + (fine - 0.5) * 0.08 * fineAmt;
+        rbWeather(diffuseColor.rgb, roughnessFactor, normal, 0.55, 0.45, 1.0);
       }
     `,
+    fNormal: 'rbRipples(normal, 0.45);',
   });
 }
 
-export function makeWaterMaterial() {
+// Cellular noise: distance to the nearest cell point (x), to the cell edge
+// (y, roughly) and a hash of the nearest cell (z). Floes, brash and cracks.
+const CELLS = /* glsl */ `
+vec3 rbCell(vec2 p) {
+  vec2 i = floor(p), f = fract(p);
+  float d1 = 9.0, d2 = 9.0, h = 0.0;
+  for (int y = -1; y <= 1; y++) for (int x = -1; x <= 1; x++) {
+    vec2 o = vec2(float(x), float(y));
+    vec2 c = o + vec2(rbHash12(i + o), rbHash12(i + o + 19.7)) * 0.8 + 0.1;
+    float d = length(c - f);
+    if (d < d1) { d2 = d1; d1 = d; h = rbHash12(i + o + 7.3); } else if (d < d2) d2 = d;
+  }
+  return vec3(d1, (d2 - d1) * 0.5, h);
+}
+`;
+
+// Water. ice: the river and pond polygons (aIce 1 = the Charles, read from
+// the ice textures; 2 = ponds, which freeze over evenly), else the sea.
+export function makeWaterMaterial({ ice = false } = {}) {
   const m = new THREE.MeshStandardMaterial({ color: 0x2f5f86, roughness: 0.06, metalness: 0.0, envMapIntensity: 1.1, flatShading: true });
-  return patch(m, 'rb-water', {
+  if (ice) m.defines = { RB_ICE: '' };
+  return patch(m, ice ? 'rb-water-ice' : 'rb-water', {
     constNormal: true,
+    uniforms: ice ? iceUniforms : {},
+    vPars: ice ? 'attribute float aIce; varying float vIceKind;' : '',
+    vMain: ice ? 'vIceKind = aIce;' : '',
+    fPars: ice ? `varying float vIceKind;
+      uniform float uIce, uIceFront, uIceEpoch;
+      uniform sampler2D tIceShore, tIceBroken;
+      uniform vec4 uIceBox;
+      ${CELLS}` : '',
     fNormal: /* glsl */ `
       {
         vec2 p = vWPos.xz;
@@ -130,13 +226,83 @@ export function makeWaterMaterial() {
         g *= amp;
         vec3 wn = normalize(vec3(-g.x, 1.0, -g.y));
         normal = normalize((viewMatrix * vec4(wn, 0.0)).xyz);
+        rbRipples(normal, -1.0);
       }
+      float rbIceCov = 0.0, rbIceThin = 0.0, rbBrash = 0.0, rbCrack = 0.0;
+      #ifdef RB_ICE
+      if (uIce > 0.001 && vIceKind > 0.5) {
+        vec2 p = vWPos.xz;
+        vec2 uv = (p - uIceBox.xy) * uIceBox.zw;
+        float nz = rbNoise(p * 0.03) * 0.65 + rbNoise(p * 0.11) * 0.35;
+        if (vIceKind < 1.5 && uv.x > 0.0 && uv.y > 0.0 && uv.x < 1.0 && uv.y < 1.0) {
+          // The sheet grows out from the banks; pancake floes drift ahead of it.
+          float shore = texture2D(tIceShore, uv).r * 255.0;
+          float front = uIceFront + (nz - 0.5) * 30.0;
+          float sheet = smoothstep(front + 2.0, front - 2.0, shore);
+          rbIceCov = sheet;
+          if (sheet < 0.999 && shore < front + 150.0) {
+            vec3 c = rbCell(p * 0.16);
+            float floe = smoothstep(0.44, 0.36, c.x) * step(c.z, uIce * 1.7) * smoothstep(front + 150.0, front + 8.0, shore);
+            rbIceCov = max(sheet, floe * 0.95);
+          }
+          rbIceThin = (1.0 - smoothstep(0.12, 0.6, uIce)) * (1.0 - sheet * 0.3);
+          // Channels cut by the icebreakers: slabs of the old sheet in open
+          // water, then new grey ice between them, then white again.
+          vec2 jit = (vec2(rbNoise(p * 0.45), rbNoise(p * 0.45 + 31.0)) - 0.5) * 6.0;
+          vec4 b = texture2D(tIceBroken, uv + jit * uIceBox.zw);
+          if (b.a > 0.5) {
+            float age = mod(uIceEpoch - floor(b.r * 255.0 + 0.5) + 256.0, 256.0) * 2.0;
+            vec3 bc = rbCell(p * 0.6 + vec2(0.0, min(age, 30.0) * 0.02));
+            float slab = step(0.5, bc.z) * smoothstep(0.015, 0.05, bc.y);
+            float fill = smoothstep(30.0, 150.0, age);
+            float fresh = 1.0 - smoothstep(150.0, 300.0, age);
+            rbBrash = slab * fresh;
+            rbIceCov = mix(rbIceCov, max(slab * 0.9, fill), fresh * sheet);
+            rbIceThin = mix(rbIceThin, max(1.0 - slab, 0.0) * (1.0 - fill * 0.5), fresh * sheet);
+          }
+        } else {
+          // Ponds (and the river beyond the map) ice over evenly.
+          rbIceCov = smoothstep(0.3, 0.5, uIce + (nz - 0.5) * 0.25);
+          rbIceThin = 1.0 - smoothstep(0.35, 0.8, uIce);
+        }
+        if (rbIceCov > 0.001) {
+          // Pressure cracks: meandering lines (zero crossings of a warped
+          // noise), only partly visible, fading with distance.
+          float cd = length(vWPos - cameraPosition);
+          if (cd < 500.0 && rbBrash < 0.5) {
+            vec2 wp = p * 0.035 + vec2(rbNoise(p * 0.011), rbNoise(p * 0.011 + 7.0)) * 1.6;
+            float n1 = abs(rbNoise(wp) - 0.5), n2 = abs(rbNoise(wp * 2.3 + 4.1) - 0.5);
+            float fw = 0.004 + cd * 0.00004;
+            float show = smoothstep(0.42, 0.7, rbNoise(p * 0.016 + 3.0));
+            rbCrack = max(1.0 - smoothstep(0.0, fw * 2.0, n1), (1.0 - smoothstep(0.0, fw, n2)) * 0.6) * show
+              * (1.0 - rbIceThin * 0.7) * (1.0 - smoothstep(250.0, 500.0, cd));
+          }
+          vec2 gi = (vec2(rbNoise(p * 0.7), rbNoise(p * 0.7 + 5.0)) - 0.5) * (0.05 + rbBrash * 0.5);
+          vec3 iceN = normalize((viewMatrix * vec4(normalize(vec3(gi.x, 1.0, gi.y)), 0.0)).xyz);
+          normal = normalize(mix(normal, iceN, rbIceCov));
+        }
+      }
+      #endif
     `,
     fMain: /* glsl */ `
       {
         float sparkle = rbNoise(vWPos.xz * 0.08 + uTime * 0.05);
         diffuseColor.rgb *= 0.85 + sparkle * 0.3;
       }
+      #ifdef RB_ICE
+      if (rbIceCov > 0.001) {
+        // Snow settles on old ice (not on the slabs' wet edges or new ice).
+        float drift = rbNoise(vWPos.xz * 0.05) * 0.5 + rbNoise(vWPos.xz * 0.9) * 0.2;
+        float snowy = smoothstep(0.0, 0.4, uSnow * 1.4 - drift * 0.6) * (1.0 - rbIceThin) * (1.0 - rbBrash * 0.6);
+        // Bare ice varies from milky to clear blue-grey where the wind swept it.
+        float clear = smoothstep(0.55, 0.85, rbNoise(vWPos.xz * 0.008 + 11.0));
+        vec3 iceCol = mix(mix(vec3(0.42, 0.55, 0.66), vec3(0.2, 0.3, 0.4), clear), vec3(0.05, 0.075, 0.095), rbIceThin);
+        iceCol = mix(iceCol, vec3(0.80, 0.84, 0.90), snowy * (1.0 - clear * 0.5));
+        iceCol *= 1.0 - rbCrack * 0.3 * (1.0 - snowy * 0.75);
+        diffuseColor.rgb = mix(diffuseColor.rgb, iceCol, rbIceCov);
+        roughnessFactor = mix(roughnessFactor, mix(mix(0.22, 0.07, rbIceThin), 0.78, snowy), rbIceCov);
+      }
+      #endif
     `,
   });
 }
@@ -191,6 +357,7 @@ export function makeBuildingMaterial() {
         diffuseColor.rgb = mix(diffuseColor.rgb, glass, mask);
         roughnessFactor = mix(roughnessFactor, 0.08, mask);
         metalnessFactor = mix(metalnessFactor, 0.15 + glassy * 0.35, mask);
+        rbWeather(diffuseColor.rgb, roughnessFactor, normal, 0.3, 0.0, 1.0);
         float lit = mix(step(0.6, rbHash12(id * 1.31 + seed + 7.7)), 0.4, lod);
         vec3 warm = mix(vec3(1.0, 0.72, 0.38), vec3(0.72, 0.84, 1.0), step(0.8, r));
         float glow = mix(0.18 + 0.5 * rbHash12(id * 0.73 + seed), 0.35, lod);
@@ -208,6 +375,7 @@ export function makeRoadMaterial({ tunnel = false } = {}) {
   if (tunnel) m.defines = { RB_TUNNEL: '' };
   return patch(m, tunnel ? 'rb-road-tunnel' : 'rb-road', {
     constNormal: true,
+    fNormal: 'rbRipples(normal, 1.0);',
     vPars: 'attribute vec4 aRoad; attribute float aMark; attribute vec2 aUV; varying vec4 vRoad; varying float vMark; varying vec2 vRUV;',
     vMain: 'vRoad = aRoad; vMark = aMark; vRUV = aUV;',
     fPars: 'varying vec4 vRoad; varying float vMark; varying vec2 vRUV;',
@@ -254,12 +422,19 @@ export function makeRoadMaterial({ tunnel = false } = {}) {
         col = mix(col, yellow, paintY * 0.92);
         diffuseColor.rgb = col;
         roughnessFactor = mix(roughnessFactor, 0.7, max(paintW, paintY));
-        // Street lights: warm pools along both kerbs at night.
+        // Snow: plowed lanes, wheel tracks nearly clear.
+        float lw = 2.0 * max(hw - sh, 1.2) / lanes, lp = fract((u + max(hw - sh, 1.2)) / lw);
+        float wob = (rbNoise(vec2(v * 0.07, u)) - 0.5) * 0.08;
+        float tracks = max(rbLine(lp - 0.28 + wob, 0.07, 0.05), rbLine(lp - 0.72 + wob, 0.07, 0.05)) * (1.0 - step(max(hw - sh, 1.2), abs(u)));
+        tracks *= 0.45 + 0.55 * rbNoise(vec2(v * 0.4, u * 2.0));
+        rbWeather(diffuseColor.rgb, roughnessFactor, normal, 1.0, 1.0, 0.7 * (1.0 - 0.6 * tracks));
+        col = diffuseColor.rgb;
+        // Street lights: warm pools along both kerbs at night (brighter on wet asphalt).
         if (uNight > 0.01) {
           float k = fract(v / 34.0) - 0.5;
           float pool = exp(-k * k * 34.0 * 34.0 / 70.0);
           float side = 0.35 + 0.65 * smoothstep(0.0, hw, abs(u));
-          totalEmissiveRadiance += col * vec3(1.0, 0.8, 0.55) * pool * side * uNight * 1.6;
+          totalEmissiveRadiance += col * vec3(1.0, 0.8, 0.55) * pool * side * uNight * 1.15 * (1.0 + uWet * 1.1);
           totalEmissiveRadiance += col * vec3(0.55, 0.6, 0.75) * uNight * 0.12;
         }
         #ifdef RB_TUNNEL
@@ -309,6 +484,7 @@ export function makeRunwayMaterial() {
         col = mix(col, vec3(0.86, 0.86, 0.84), paint * 0.93);
         diffuseColor.rgb = col;
         roughnessFactor = mix(roughnessFactor, 0.65, paint);
+        rbWeather(diffuseColor.rgb, roughnessFactor, normal, 0.9, 0.7, 0.55);
       }
     `,
   });
@@ -333,6 +509,7 @@ export function makeTaxiwayMaterial() {
         paint *= 1.0 - smoothstep(0.15, 0.6, fu * 5.0);
         col = mix(col, vec3(0.86, 0.62, 0.1), paint * 0.92);
         diffuseColor.rgb = col;
+        rbWeather(diffuseColor.rgb, roughnessFactor, normal, 0.9, 0.7, 0.55);
       }
     `,
   });
@@ -401,10 +578,11 @@ function makeSidewalkMaterialImpl() {
         col = mix(col, col * 0.55, gutter);
         float n = rbNoise(vWPos.xz * 0.4);
         diffuseColor.rgb = col * (0.93 + n * 0.12);
+        rbWeather(diffuseColor.rgb, roughnessFactor, normal, 0.75, 0.3, 0.9);
         if (uNight > 0.01) {
           float k = fract(vRUV.y / 34.0) - 0.5;
           float pool = exp(-k * k * 34.0 * 34.0 / 70.0);
-          totalEmissiveRadiance += diffuseColor.rgb * vec3(1.0, 0.8, 0.55) * pool * uNight * 1.2;
+          totalEmissiveRadiance += diffuseColor.rgb * vec3(1.0, 0.8, 0.55) * pool * uNight * 0.7;
         }
       }
     `,
@@ -425,6 +603,7 @@ export function makeCrosswalkMaterial() {
         bar *= 1.0 - smoothstep(0.25, 0.6, fv * 3.0);
         if (bar < 0.02) discard;
         diffuseColor.rgb *= 0.92 + rbNoise(vWPos.xz * 2.0) * 0.12;
+        rbWeather(diffuseColor.rgb, roughnessFactor, normal, 0.4, 0.0, 0.55);
       }
     `,
   });
@@ -453,6 +632,7 @@ export function makeRailMaterial({ tunnel = false } = {}) {
         diffuseColor.rgb = col;
         metalnessFactor = mix(metalnessFactor, 0.7, rail);
         roughnessFactor = mix(roughnessFactor, 0.35, rail);
+        rbWeather(diffuseColor.rgb, roughnessFactor, normal, 0.6, 0.1, 0.85);
         #ifdef RB_TUNNEL
           // Tunnel: little daylight, pools of light under the lamps every 6 m.
           diffuseColor.rgb *= 0.3;
@@ -471,11 +651,11 @@ export function makeBasicStandard(color, opts = {}) {
 // Flat-shaded material for normal-less geometry (railings, simple props).
 export function makeFlatProp(color, opts = {}) {
   const m = new THREE.MeshStandardMaterial({ color, roughness: 0.85, metalness: 0, flatShading: true, ...opts });
-  return patch(m, 'rb-prop', { constNormal: true });
+  return patch(m, 'rb-prop', { constNormal: true, fMain: 'rbWeather(diffuseColor.rgb, roughnessFactor, normal, 0.5, 0.0, 1.0);' });
 }
 
 // Vertex-coloured standard material with sRGB byte colours (trees, props).
 export function makeVertexColorMaterial(opts = {}) {
   const m = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9, metalness: 0, flatShading: true, ...opts });
-  return patch(m, 'rb-vcol-' + (opts.name || ''), { colorVertex: SRGB_COLOR_VERTEX });
+  return patch(m, 'rb-vcol-' + (opts.name || ''), { colorVertex: SRGB_COLOR_VERTEX, fMain: 'rbWeather(diffuseColor.rgb, roughnessFactor, normal, 0.35, 0.0, 1.0);' });
 }

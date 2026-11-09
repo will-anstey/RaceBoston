@@ -79,7 +79,8 @@ export class ChaseCamera {
       // hood (drag turns the driver's head)
       const lh = Math.atan2(cfx, -cfz) + look.yaw + (this.lookBack ? Math.PI : 0);
       const lp = look.pitch * 0.6 - 0.01;
-      px = car.x + cfx * 0.3; py = cy + 1.3; pz = car.z + cfz * 0.3;
+      const ef = car.eyeF ?? 0.3, eh = car.eyeH ?? 1.3;
+      px = car.x + cfx * ef; py = cy + eh; pz = car.z + cfz * ef;
       tx = px + Math.sin(lh) * Math.cos(lp) * 30; ty = py + Math.sin(lp) * 30; tz = pz - Math.cos(lh) * Math.cos(lp) * 30;
     } else if (this.mode === 3 && !under) {
       const hgt = 70 + speed * 1.2;
@@ -87,8 +88,10 @@ export class ChaseCamera {
       tx = car.x + fx * 6; ty = cy; tz = car.z + fz * 6;
     } else {
       const far = this.mode === 1 && !under;
-      let dist = (far ? 12.5 : 7.0) + speed * (far ? 0.06 : 0.045);
-      let height = (far ? 5.2 : 2.5) + speed * 0.012;
+      const k = car.camScale ?? 1;   // boats: further back for a long hull
+      let dist = (far ? 12.5 : 7.0) * k + speed * (far ? 0.06 : 0.045);
+      const lift = car.camLift ?? 0;   // a ship: up over its superstructure
+      let height = (far ? 5.2 : 2.5) * Math.sqrt(k) + speed * 0.012 + lift;
       if (under) height = Math.min(height, 3.4);
       // Pull in when a building or tunnel wall would block the view.
       const bx = car.x - fx * dist, bz = car.z - fz * dist;
@@ -101,7 +104,7 @@ export class ChaseCamera {
       const r0 = Math.hypot(this.dist, this.height), a0 = Math.atan2(this.height, this.dist);
       const a = clamp(a0 - look.pitch, 0.02, under ? Math.atan2(3.4, 2.2) : 1.35);
       px = car.x - fx * r0 * Math.cos(a); py = cy + r0 * Math.sin(a); pz = car.z - fz * r0 * Math.cos(a);
-      tx = car.x + fx * 3; ty = cy + 1.1; tz = car.z + fz * 3;
+      tx = car.x + fx * 3; ty = cy + 1.1 + lift * 0.3; tz = car.z + fz * 3;
     }
     // Never inside the hillside behind the car.
     if (!under) py = Math.max(py, cw.groundAt(px, pz) + 1.2);

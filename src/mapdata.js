@@ -141,6 +141,8 @@ function decode(raw, terrain) {
     water: raw.water.map((p) => p.map(ring)),
     waterLevels: Float32Array.from(raw.waterLevels || raw.water.map(() => 0), (v) => v / 10),
     waterHole: Uint8Array.from(raw.waterHole || raw.water.map(() => 0)),
+    waterKind: Uint8Array.from(raw.waterKind || raw.water.map(() => 0)),
+    river: Float32Array.from(raw.river || []),
     areas: raw.areas.map(([type, p]) => ({ type, rings: p.map(ring) })),
     ...decodeRail(raw, terrain),
     aero: decodeAero(raw.aero),

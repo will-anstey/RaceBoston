@@ -1,0 +1,33 @@
+<html>
+<head>
+<title>Retro Race Boston</title>
+<script language="JavaScript" src="data.js"></script>
+<script language="JavaScript" src="game.js"></script>
+<script language="JavaScript">
+function rbBoot() {
+  if (typeof rbStart == 'undefined' || typeof ROWS == 'undefined') {
+    alert('Retro Race Boston could not load ' + (typeof ROWS == 'undefined' ? 'data.js' : 'game.js') + '. Check the server is running, then Reload.');
+    return;
+  }
+  rbStart();
+}
+</script>
+</head>
+<body bgcolor="#101820" text="#ffffff" link="#f4c542" vlink="#f4c542" onload="rbBoot()" marginwidth="0" marginheight="0" leftmargin="0" topmargin="0">
+<div id="view" style="position:absolute; left:8px; top:8px; width:448px; height:336px; clip:rect(0px 448px 336px 0px); overflow:hidden; background-color:#2c548c; layer-background-color:#2c548c">
+<div id="map" style="position:absolute; left:0px; top:0px; width:2304px; height:1536px"><table border="0" cellpadding="0" cellspacing="0"><tr><td><img src="tiles/t0_0.gif" width="256" height="256" border="0"></td><td><img src="tiles/t1_0.gif" width="256" height="256" border="0"></td><td><img src="tiles/t2_0.gif" width="256" height="256" border="0"></td><td><img src="tiles/t3_0.gif" width="256" height="256" border="0"></td><td><img src="tiles/t4_0.gif" width="256" height="256" border="0"></td><td><img src="tiles/t5_0.gif" width="256" height="256" border="0"></td><td><img src="tiles/t6_0.gif" width="256" height="256" border="0"></td><td><img src="tiles/t7_0.gif" width="256" height="256" border="0"></td><td><img src="tiles/t8_0.gif" width="256" height="256" border="0"></td></tr>
+<tr><td><img src="tiles/t0_1.gif" width="256" height="256" border="0"></td><td><img src="tiles/t1_1.gif" width="256" height="256" border="0"></td><td><img src="tiles/t2_1.gif" width="256" height="256" border="0"></td><td><img src="tiles/t3_1.gif" width="256" height="256" border="0"></td><td><img src="tiles/t4_1.gif" width="256" height="256" border="0"></td><td><img src="tiles/t5_1.gif" width="256" height="256" border="0"></td><td><img src="tiles/t6_1.gif" width="256" height="256" border="0"></td><td><img src="tiles/t7_1.gif" width="256" height="256" border="0"></td><td><img src="tiles/t8_1.gif" width="256" height="256" border="0"></td></tr>
+<tr><td><img src="tiles/t0_2.gif" width="256" height="256" border="0"></td><td><img src="tiles/t1_2.gif" width="256" height="256" border="0"></td><td><img src="tiles/t2_2.gif" width="256" height="256" border="0"></td><td><img src="tiles/t3_2.gif" width="256" height="256" border="0"></td><td><img src="tiles/t4_2.gif" width="256" height="256" border="0"></td><td><img src="tiles/t5_2.gif" width="256" height="256" border="0"></td><td><img src="tiles/t6_2.gif" width="256" height="256" border="0"></td><td><img src="tiles/t7_2.gif" width="256" height="256" border="0"></td><td><img src="tiles/t8_2.gif" width="256" height="256" border="0"></td></tr>
+<tr><td><img src="tiles/t0_3.gif" width="256" height="256" border="0"></td><td><img src="tiles/t1_3.gif" width="256" height="256" border="0"></td><td><img src="tiles/t2_3.gif" width="256" height="256" border="0"></td><td><img src="tiles/t3_3.gif" width="256" height="256" border="0"></td><td><img src="tiles/t4_3.gif" width="256" height="256" border="0"></td><td><img src="tiles/t5_3.gif" width="256" height="256" border="0"></td><td><img src="tiles/t6_3.gif" width="256" height="256" border="0"></td><td><img src="tiles/t7_3.gif" width="256" height="256" border="0"></td><td><img src="tiles/t8_3.gif" width="256" height="256" border="0"></td></tr>
+<tr><td><img src="tiles/t0_4.gif" width="256" height="256" border="0"></td><td><img src="tiles/t1_4.gif" width="256" height="256" border="0"></td><td><img src="tiles/t2_4.gif" width="256" height="256" border="0"></td><td><img src="tiles/t3_4.gif" width="256" height="256" border="0"></td><td><img src="tiles/t4_4.gif" width="256" height="256" border="0"></td><td><img src="tiles/t5_4.gif" width="256" height="256" border="0"></td><td><img src="tiles/t6_4.gif" width="256" height="256" border="0"></td><td><img src="tiles/t7_4.gif" width="256" height="256" border="0"></td><td><img src="tiles/t8_4.gif" width="256" height="256" border="0"></td></tr>
+<tr><td><img src="tiles/t0_5.gif" width="256" height="256" border="0"></td><td><img src="tiles/t1_5.gif" width="256" height="256" border="0"></td><td><img src="tiles/t2_5.gif" width="256" height="256" border="0"></td><td><img src="tiles/t3_5.gif" width="256" height="256" border="0"></td><td><img src="tiles/t4_5.gif" width="256" height="256" border="0"></td><td><img src="tiles/t5_5.gif" width="256" height="256" border="0"></td><td><img src="tiles/t6_5.gif" width="256" height="256" border="0"></td><td><img src="tiles/t7_5.gif" width="256" height="256" border="0"></td><td><img src="tiles/t8_5.gif" width="256" height="256" border="0"></td></tr>
+</table></div>
+<div id="flag" style="position:absolute; left:-100px; top:-100px; width:16px; height:16px"><img src="tiles/check.gif" width="16" height="16"></div>
+<div id="car" style="position:absolute; left:216px; top:152px; width:16px; height:16px"><img name="carimg" src="tiles/car0.gif" width="16" height="16"></div>
+</div>
+<div id="hud" style="position:absolute; left:8px; top:350px; width:640px; height:36px"><font face="Arial,Helvetica" size="2">Loading Boston...</font></div>
+<div id="help" style="position:absolute; left:8px; top:388px; width:400px">
+<font face="Arial,Helvetica" size="1" color="#b0b8c8"><b>RETRO RACE BOSTON</b> &nbsp; W accelerate, S brake, A D steer, R restart
+(or I K J L). 6 checkpoints, State House to Fenway Park. Map &copy; OpenStreetMap contributors.</font></div>
+</body>
+</html>

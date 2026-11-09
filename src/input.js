@@ -3,7 +3,7 @@
 
 const ACTION_KEYS = {
   KeyR: 'reset', KeyC: 'camera', KeyM: 'map', Escape: 'pause', KeyP: 'pause', KeyN: 'time',
-  KeyK: 'mute', KeyH: 'horn', KeyB: 'lookback', Enter: 'confirm', KeyF: 'fullscreen', KeyG: 'fly',
+  KeyK: 'mute', KeyH: 'horn', KeyB: 'lookback', Enter: 'confirm', KeyF: 'fullscreen', KeyG: 'fly', KeyT: 'weather', KeyE: 'board',
 };
 const PAD_ACTIONS = { 2: 'reset', 3: 'camera', 8: 'map', 9: 'pause', 12: 'time' };
 

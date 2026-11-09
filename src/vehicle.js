@@ -33,12 +33,13 @@ export class Vehicle {
     this.x = x; this.z = z; this.heading = heading;
     this.y = y; this.vy = 0; this.airborne = false; this.airTime = 0; this.landImpact = 0;
     this.slopePitch = 0; this.slopeRoll = 0; this.onDeck = false; this.inCut = false;
+    this.weatherGrip = this.weatherGrip || 1;   // set from the weather (wet / snowy roads)
     this._g = this._g || { h: 0, deck: false, inCut: false };
     this.vx = 0; this.vz = 0; this.vF = 0; this.vR = 0;
     this.yawRate = 0; this.steer = 0;
     this.roll = 0; this.pitch = 0; this.wheelSpin = 0;
     this.impact = 0; this.impactKind = 0; this.skid = 0; this.accel = 0;
-    this.onGrass = false; this.surface = 0;
+    this.onGrass = false; this.onIce = false; this.surface = 0;
   }
 
   get speed() { return Math.hypot(this.vx, this.vz); }
@@ -55,7 +56,10 @@ export class Vehicle {
     const atGround = !this.onDeck && Math.abs(this.y - cw.groundAt(this.x, this.z)) < 0.4;
     const onGrass = atGround && !!(surf & SURF.GRASS) && !(surf & (SURF.ROAD | SURF.PAVED));
     if (this.airborne) { this.stepAir(dt, cw); return; }
-    const gripMul = onGrass ? 0.72 : 1;
+    // On a frozen river: a fifth of the grip, and the wheels spin up.
+    const onIce = atGround && !onGrass && !!(surf & SURF.WATER) && !(surf & (SURF.ROAD | SURF.PAVED)) && cw.onIce(this.x, this.z);
+    this.onIce = onIce;
+    const gripMul = (onGrass ? 0.72 : onIce ? 0.2 : 1) * (onIce ? 1 : this.weatherGrip);
     const speedAbs = Math.abs(vF);
 
     // Steering: less lock at speed, rate-limited.
@@ -75,13 +79,13 @@ export class Vehicle {
       if (vF < -0.5) a += h.brake * inp.throttle;
       else {
         const r = clamp(vF / vmax, 0, 1);
-        a += inp.throttle * h.accel * (boosting ? 1.6 : 1) * (1 - Math.pow(r, h.curve));
+        a += inp.throttle * h.accel * (boosting ? 1.6 : 1) * (1 - Math.pow(r, h.curve)) * (onIce ? 0.35 : 1);
       }
     } else {
       a -= h.drag * vF * Math.abs(vF);
     }
     if (inp.brake > 0) {
-      if (vF > 0.5) a -= h.brake * inp.brake;
+      if (vF > 0.5) a -= h.brake * inp.brake * (onIce ? 0.25 : 1);
       else if (vF > -h.maxReverse) a -= h.reverseAccel * inp.brake;
     }
     // Gravity along slopes (gentle, arcade).

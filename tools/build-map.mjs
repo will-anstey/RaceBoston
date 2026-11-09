@@ -15,6 +15,7 @@ import { solveElevations, ROAD_FLAGS } from './elevation.mjs';
 import { buildAero } from './aero.mjs';
 import { buildTerrain, encodeTerrain } from './terrain.mjs';
 import { encodePNG } from './png.mjs';
+import { buildRiverLine } from './river.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const cacheDir = path.join(here, '.cache');
@@ -705,7 +706,7 @@ function buildAreas(els) {
 
 // ==================================================================== WATER
 function buildWater(els) {
-  const out = [];
+  const out = [], kinds = [];
   for (const el of els) {
     const t = el.tags || {};
     if (t.natural === 'coastline') continue;
@@ -718,10 +719,23 @@ function buildWater(els) {
       if (!poly) continue;
       if (-G.signedAreaXZ(poly[0]) < 10) continue;
       out.push(poly);
+      kinds.push(classifyWater(t, poly));
     }
   }
-  log(`water polygons: ${out.length}`);
-  return out;
+  log(`water polygons: ${out.length} (${kinds.filter((k) => k === 1).length} of the Charles)`);
+  return { polys: out, kinds };
+}
+
+// What a cold snap does to each water polygon (WATER_KIND): the Charles above
+// the Museum of Science dam (its river polygons) freezes over; ponds, lagoons
+// and other fresh water freeze too; the harbour and tidal water stay open.
+export const WATER_KIND = { OPEN: 0, CHARLES: 1, POND: 2 };
+function classifyWater(t, poly) {
+  if (t.tidal === 'yes' || t.salt === 'yes' || /^(fountain|reflecting_pool|wastewater|bay|harbour|sea|strait|lagoon)$/.test(t.water || '') || t.natural === 'bay') return WATER_KIND.OPEN;
+  const bb = G.ringBBox(poly[0]), cx = (bb.minX + bb.maxX) / 2, cz = (bb.minZ + bb.maxZ) / 2;
+  const river = t.water === 'river' || t.waterway === 'riverbank' || /Charles/i.test(t.name || '');
+  if (river) return cx < -250 && cz > -2900 && cz < 900 ? WATER_KIND.CHARLES : /Muddy/i.test(t.name || '') ? WATER_KIND.POND : WATER_KIND.OPEN;
+  return WATER_KIND.POND;
 }
 
 // ===================================================================== RAIL
@@ -1436,7 +1450,7 @@ const roadData = buildRoads(load('roads'));
 const waterEls = load('water');
 const land = buildLand(waterEls.filter((e) => e.tags && e.tags.natural === 'coastline'), WBOX)
   .map((p) => simplifyPolygon(p, 0.5)).filter(Boolean);
-const water = buildWater(waterEls);
+const { polys: water, kinds: waterKind } = buildWater(waterEls);
 const { buildings } = buildBuildings(load('buildings'));
 const { areas, pierLines } = buildAreas([...load('green'), ...load('paved')]);
 const rail = buildRail(load('rail'), load('transit'));
@@ -1531,6 +1545,9 @@ for (const w of rail.ways) {
   }
 }
 const terrain = buildTerrain({ box: WBOX, unproj, land, water, cuts, aerodromes: aero.aerodromes, log });
+// Fresh water only: a "pond" at sea level is a salt marsh or a tidal basin.
+waterKind.forEach((k, i) => { if (k === WATER_KIND.POND && terrain.levels[i] < 0.3) waterKind[i] = WATER_KIND.OPEN; });
+const riverLine = buildRiverLine(water.filter((_, i) => waterKind[i] === WATER_KIND.CHARLES), { minX: PLAY.minX - 30, maxX: 600, minZ: -3200, maxZ: 1200 }, log) || [];
 const groundAt = (x, z) => {
   const fx = (x - terrain.minX) / terrain.step, fz = (z - terrain.minZ) / terrain.step;
   if (!(fx >= 0 && fz >= 0 && fx <= terrain.w - 1 && fz <= terrain.h - 1)) return 0;
@@ -1715,6 +1732,10 @@ const out = {
   // surface level of each water polygon, decimeters; 1 where it is a hole in a land polygon
   waterLevels: terrain.levels.map((v) => Math.round(v * 10)),
   waterHole,
+  // what freezes in a cold snap: 0 open (harbour, tidal), 1 the Charles, 2 ponds and other fresh water
+  waterKind,
+  // Charles centre line for boats, upstream to the dam: [x, z, bank distance right, left (facing downstream), ...] every 10 m
+  river: riverLine,
   // [type, [[outer], [hole]...]]
   areas: areas.map((a) => [a.type, a.poly.map(flat)]),
   // Rail network: node x,z; node elevation*10; node flags (1 portal, 2 stop, 4 buffer, 8 map edge);

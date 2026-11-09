@@ -90,6 +90,41 @@ export class AudioFX {
     this.jwGain.gain.setTargetAtTime(l * l * 0.025, t, 0.25);
   }
 
+  // Rain on the city: a hiss with a softer patter under it (0..1).
+  setRain(level) {
+    if (!this.ctx) return;
+    if (!this.rainGain) {
+      const ctx = this.ctx;
+      this.rainGain = ctx.createGain(); this.rainGain.gain.value = 0;
+      const hp = ctx.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 900;
+      const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 7500;
+      const n1 = ctx.createBufferSource(); n1.buffer = this.noiseBuf; n1.loop = true; n1.start();
+      n1.connect(hp).connect(lp).connect(this.rainGain);
+      const pat = ctx.createBiquadFilter(); pat.type = 'bandpass'; pat.frequency.value = 420; pat.Q.value = 0.6;
+      const g2 = ctx.createGain(); g2.gain.value = 0.6;
+      const n2 = ctx.createBufferSource(); n2.buffer = this.noiseBuf; n2.loop = true; n2.loopStart = 0.7; n2.start(0, 0.7);
+      n2.connect(pat).connect(g2).connect(this.rainGain);
+      this.rainGain.connect(this.master);
+    }
+    this.rainGain.gain.setTargetAtTime(Math.max(0, Math.min(1, level)) * 0.22, this.ctx.currentTime, 0.6);
+  }
+
+  // A thunder roll: a crack, then a long low rumble (strength 0..1, nearer is louder).
+  thunder(strength = 1) {
+    if (!this.ctx) return;
+    const ctx = this.ctx, t = ctx.currentTime;
+    const src = ctx.createBufferSource(); src.buffer = this.noiseBuf; src.loop = true;
+    const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.setValueAtTime(900, t); lp.frequency.exponentialRampToValueAtTime(90, t + 1.2);
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0, t);
+    g.gain.linearRampToValueAtTime(0.75 * strength, t + 0.06);
+    g.gain.setTargetAtTime(0.35 * strength, t + 0.3, 0.4);
+    g.gain.setTargetAtTime(0, t + 1.6, 1.1);
+    src.connect(lp).connect(g).connect(this.master);
+    src.start(t, Math.random());
+    src.stop(t + 7);
+  }
+
   setRumble(level) {
     if (this.ctx) this.rGain.gain.setTargetAtTime(Math.max(0, Math.min(1, level)) * 0.55, this.ctx.currentTime, 0.15);
   }
@@ -177,6 +212,86 @@ export class AudioFX {
       o.connect(g).connect(this.master);
       o.start(t); o.stop(t + dur + 0.02);
     });
+  }
+
+  // Rowing: the blades going in at the catch (a soft splash), the oarlocks
+  // clunking at the release.
+  oar(strength = 1) {
+    const f = this._burst(0.32, 900, 0.07 * strength, 'bandpass', 0.9);
+    if (f) f.frequency.exponentialRampToValueAtTime(320, this.ctx.currentTime + 0.3);
+  }
+  oarlock() { this._burst(0.06, 1900, 0.04, 'bandpass', 4); }
+
+  // Water rushing past a hull (0..1).
+  setHull(level) {
+    if (!this.ctx) return;
+    if (!this.hullGain) {
+      const ctx = this.ctx;
+      this.hullGain = ctx.createGain(); this.hullGain.gain.value = 0;
+      const f = ctx.createBiquadFilter(); f.type = 'bandpass'; f.frequency.value = 650; f.Q.value = 0.4;
+      const n = ctx.createBufferSource(); n.buffer = this.noiseBuf; n.loop = true; n.start(0, 1.1);
+      n.connect(f).connect(this.hullGain).connect(this.master);
+    }
+    this.hullGain.gain.setTargetAtTime(clamp(level, 0, 1) * 0.12, this.ctx.currentTime, 0.2);
+  }
+
+  // Ice grinding and cracking under an icebreaker's bow (0..1, nearer is louder).
+  setCrunch(level) {
+    if (!this.ctx) return;
+    if (!this.cGain) {
+      const ctx = this.ctx;
+      this.cGain = ctx.createGain(); this.cGain.gain.value = 0;
+      const f = ctx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = 380; f.Q.value = 1.2;
+      const n = ctx.createBufferSource(); n.buffer = this.noiseBuf; n.loop = true; n.start(0, 0.4);
+      n.connect(f).connect(this.cGain).connect(this.master);
+    }
+    const l = clamp(level, 0, 1);
+    this.cGain.gain.setTargetAtTime(l * 0.35, this.ctx.currentTime, 0.3);
+    if (l > 0.05 && Math.random() < l * 0.08) this._burst(0.08 + Math.random() * 0.2, 2200 + Math.random() * 1800, 0.05 + l * 0.12, 'bandpass', 2.5);
+  }
+
+  // A ship's diesel: a deep, lumpy throb that rises with the engine order (0..1).
+  setDiesel(level, speed = 0) {
+    if (!this.ctx) return;
+    const ctx = this.ctx, t = ctx.currentTime;
+    if (!this.dGain) {
+      this.dGain = ctx.createGain(); this.dGain.gain.value = 0;
+      this.dFilter = ctx.createBiquadFilter(); this.dFilter.type = 'lowpass'; this.dFilter.frequency.value = 180; this.dFilter.Q.value = 1.5;
+      this.dOsc = ctx.createOscillator(); this.dOsc.type = 'square'; this.dOsc.frequency.value = 32;
+      this.dSub = ctx.createOscillator(); this.dSub.type = 'sawtooth'; this.dSub.frequency.value = 16;
+      const g2 = ctx.createGain(); g2.gain.value = 0.6;
+      this.dOsc.connect(this.dFilter); this.dSub.connect(g2).connect(this.dFilter);
+      const n = ctx.createBufferSource(); n.buffer = this.noiseBuf; n.loop = true; n.start(0, 1.7);
+      const nf = ctx.createBiquadFilter(); nf.type = 'lowpass'; nf.frequency.value = 260;
+      const ng = ctx.createGain(); ng.gain.value = 0.35;
+      n.connect(nf).connect(ng).connect(this.dFilter);
+      this.dFilter.connect(this.dGain).connect(this.master);
+      this.dOsc.start(); this.dSub.start();
+    }
+    const l = clamp(level, 0, 1);
+    this.dOsc.frequency.setTargetAtTime(28 + l * 26 + speed * 6, t, 0.4);
+    this.dSub.frequency.setTargetAtTime(14 + l * 13 + speed * 3, t, 0.4);
+    this.dFilter.frequency.setTargetAtTime(140 + l * 260, t, 0.4);
+    this.dGain.gain.setTargetAtTime(l > 0 ? 0.08 + l * 0.12 : 0, t, 0.3);
+  }
+
+  // The ship's horn: held while H is down, or a blast of a given length.
+  setShipHorn(on) {
+    if (!this.ctx) return;
+    if (!this.shGain) {
+      const ctx = this.ctx;
+      this.shGain = ctx.createGain(); this.shGain.gain.value = 0;
+      const f = ctx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = 700; f.Q.value = 0.8;
+      for (const fr of [110, 138.6, 165]) { const o = ctx.createOscillator(); o.type = 'sawtooth'; o.frequency.value = fr; o.connect(f); o.start(); }
+      f.connect(this.shGain).connect(this.master);
+    }
+    this.shGain.gain.setTargetAtTime(on ? 0.11 : 0, this.ctx.currentTime, on ? 0.05 : 0.12);
+  }
+  shipHorn(seconds = 1) {
+    if (!this.ctx) return;
+    this.setShipHorn(true);
+    clearTimeout(this._shT);
+    this._shT = setTimeout(() => this.setShipHorn(false), seconds * 1000);
   }
 
   checkpoint() { this.tone([880, 1320], 0.18, 'triangle', 0.2); }
