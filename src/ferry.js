@@ -32,17 +32,17 @@ export const FERRY_ROUTES = [
   },
 ];
 
-const L = 24, W = 4, TOP = 0.35;      // floating landing: length, width, deck above the water
+export const L = 24, W = 4, TOP = 0.35;      // floating landing: length, width, deck above the water
 const CAPACITY = BREAKER.slots.length;
 const SHIFT = 150;                    // s on the clock to start
 const WALK = 1.55;                    // m/s, passengers on the move
-const GAP = 0.5;                      // m between the gangway port and the landing, moored
-const RAMP_U = 7;                     // where the walkway ashore joins the landing
+export const GAP = 0.5;                      // m between the gangway port and the landing, moored
+export const RAMP_U = 7;                     // where the walkway ashore joins the landing
 const PATIENCE = 200;                 // s a group waits before giving up
-const COAT = [0xb3261e, 0x1f3d6e, 0x2d2d2d, 0x2a6e4a, 0xe0a526, 0x6b3f8f, 0x8a5a33, 0x4f7fa8, 0xbfc3c7, 0xd96c8a, 0xc8102e, 0x22252b];
-const PANTS = [0x22252b, 0x2b3550, 0x4a4036, 0x3a3a3a, 0x5a5f66];
-const HATS = [0xc8102e, 0xf2c12e, 0x1f3d6e, 0xf4f4f0, 0x2a8c5a, 0x111111, 0xe8749a];
-const SKIN = [0xf1c27d, 0xe0ac84, 0xc68642, 0x8d5524, 0xffdbac];
+export const COAT = [0xb3261e, 0x1f3d6e, 0x2d2d2d, 0x2a6e4a, 0xe0a526, 0x6b3f8f, 0x8a5a33, 0x4f7fa8, 0xbfc3c7, 0xd96c8a, 0xc8102e, 0x22252b];
+export const PANTS = [0x22252b, 0x2b3550, 0x4a4036, 0x3a3a3a, 0x5a5f66];
+export const HATS = [0xc8102e, 0xf2c12e, 0x1f3d6e, 0xf4f4f0, 0x2a8c5a, 0x111111, 0xe8749a];
+export const SKIN = [0xf1c27d, 0xe0ac84, 0xc68642, 0x8d5524, 0xffdbac];
 
 export class FerryShift {
   constructor(bm, route) {
@@ -87,104 +87,14 @@ export class FerryShift {
   // ------------------------------------------------------------ landings
   // A landing floats parallel to the bank a couple of metres out, with a
   // walkway ashore; the ship moors alongside its outer edge.
-  _placeDock(name, lat, lon) {
-    const bm = this.bm, P = this.path, cw = this.g.collision, T = this.g.map.terrain, [z0, z1] = this.zone;
-    const [x, z] = bm._xz(lat, lon), pr = P.project(x, z, null, {});
-    const side = pr.d >= 0 ? 1 : -1;
-    const probe = new BoatBody('icebreaker'), env = { cw, ice: null };
-    for (const ds of [0, 12, -12, 24, -24, 36, -36, 50, -50, 70, -70, 95, -95, 125, -125]) {
-      const s = pr.s + ds;
-      if (s < z0 + 30 || s > z1 - 30) continue;
-      const c = P.at(s, 0, {}), bx = -c.tz * side, bz = c.tx * side;
-      let bank = 0;
-      for (let d = 4; d < 650; d += 0.5) if (!cw.isWaterSurface(c.x + bx * d, c.z + bz * d)) { bank = d; break; }
-      if (bank < 25) continue;
-      const ax = c.tx, az = c.tz, nx = -bx, nz = -bz;
-      const mid = bank - 2.5 - W / 2, cx = c.x + bx * mid, cz = c.z + bz * mid;
-      const at = (u, v) => [cx + ax * u + nx * v, cz + az * u + nz * v];
-      if ([[-1, -1], [1, -1], [1, 1], [-1, 1], [0, -1], [0, 1], [-0.5, 0], [0.5, 0]].some(([u, v]) => !cw.isWaterSurface(...at((u * L) / 2, (v * W) / 2)))) continue;
-      const level = T.h(cx, cz);
-      probe.level = level;
-      // Room for the ship alongside, and to pull in and out.
-      const sv = W / 2 + GAP + BREAKER.gangX, h = Math.atan2(ax, -az);
-      if (!probe.fits(env, ...at(0, sv), h) || !probe.fits(env, ...at(0, sv + 8), h)) continue;
-      // The walkway ashore, from the landing's inner edge to dry ground.
-      const [ix, iz] = at(RAMP_U, -W / 2);
-      let land = 0;
-      for (let d = 0.5; d < 14; d += 0.5) if (!cw.isWaterSurface(ix - nx * d, iz - nz * d)) { land = d; break; }
-      if (!land) continue;
-      const tx = ix - nx * (land + 1.5), tz = iz - nz * (land + 1.5);
-      const y = level + TOP, bankY = Math.max(y + 0.2, T.h(tx, tz));
-      const spots = [];
-      for (let u = -5.6; u <= 5.2 + 1e-6; u += 1.2) for (const v of [-1.25, -0.35]) spots.push({ u: u + (v > -1 ? 0.6 : 0), v, used: false });
-      return {
-        name, s, side, cx, cz, ax, az, nx, nz, level, y, tx, tz, bankY, ix, iz,
-        inland: [tx - nx * 8, tz - nz * 8],
-        spots, groups: [],
-        obstacle: { cx, cz, ax, az, nx, nz, hl: L / 2, hw: W / 2 },
-      };
-    }
-    console.warn(`ferry: no room for a landing at ${name}`);
-    return null;
-  }
+  _placeDock(name, lat, lon) { return placeLanding(this.g, this.path, this.zone, name, lat, lon); }
 
-  _dockPt(d, u, v, y = d.y) { return new THREE.Vector3(d.cx + d.ax * u + d.nx * v, y, d.cz + d.az * u + d.nz * v); }
+  _dockPt(d, u, v, y = d.y) { return dockPt(d, u, v, y); }
 
   _buildDocks() {
-    const parts = [], lamps = [], M = new THREE.Matrix4(), up = new THREE.Vector3(0, 1, 0);
-    // A box with its x along the landing (a) and z across it, centred at dock-local (u, y, v).
-    const ob = (d, u, y, v, sx, sy, sz, hex) => {
-      const a = new THREE.Vector3(d.ax, 0, d.az), zA = new THREE.Vector3().crossVectors(a, up);
-      M.makeBasis(a, up, zA).setPosition(d.cx + d.ax * u + d.nx * v, y, d.cz + d.az * u + d.nz * v);
-      const g = new THREE.BoxGeometry(sx, sy, sz);
-      g.applyMatrix4(M);
-      return colorize(g, hex);
-    };
-    const slab = (a, b, width, thick, hex) => {
-      const len = a.distanceTo(b), g = new THREE.BoxGeometry(width, thick, len);
-      M.lookAt(a, b, up).setPosition((a.x + b.x) / 2, (a.y + b.y) / 2, (a.z + b.z) / 2);
-      g.applyMatrix4(M);
-      return colorize(g, hex);
-    };
-    const signGeo = [];
-    for (const d of this.docks) {
-      const y0 = d.level;
-      parts.push(ob(d, 0, y0 + 0.05, 0, L, 0.6, W, 0x8b6b4a));                           // pontoon
-      parts.push(ob(d, 0, y0 + TOP + 0.04, W / 2 - 0.15, L, 0.1, 0.3, 0x5a4532));         // edge timber
-      for (let u = -L / 2 + 1.5; u <= L / 2 - 1.5; u += 3) parts.push(ob(d, u, y0 + 0.05, W / 2 + 0.12, 0.6, 0.5, 0.25, 0x18191b)); // fenders
-      for (const u of [-L / 2 + 1, -4, 4, L / 2 - 1]) parts.push(colorize(new THREE.CylinderGeometry(0.14, 0.17, 0.35, 8).translate(...this._dockPt(d, u, W / 2 - 0.4, y0 + TOP + 0.17).toArray()), 0x3a3d40));
-      // Shelter with a bench.
-      for (const [u, v] of [[-10.6, -1.75], [-10.6, -0.55], [-6.8, -1.75], [-6.8, -0.55]]) parts.push(ob(d, u, y0 + TOP + 1.15, v, 0.1, 2.3, 0.1, 0x4a4f54));
-      parts.push(ob(d, -8.7, y0 + TOP + 2.35, -1.15, 4.4, 0.12, 1.7, 0x2f5f8a));
-      parts.push(ob(d, -8.7, y0 + TOP + 0.24, -1.6, 3.2, 0.08, 0.45, 0x7a5a3c), ob(d, -8.7, y0 + TOP + 0.12, -1.6, 3.0, 0.24, 0.08, 0x4a4f54));
-      // Walkway ashore with handrails.
-      const foot = this._dockPt(d, RAMP_U, -W / 2 + 0.3, y0 + TOP), top = new THREE.Vector3(d.tx, d.bankY + 0.05, d.tz);
-      parts.push(slab(foot, top, 2.0, 0.14, 0x8b6b4a));
-      const ac = new THREE.Vector3(d.ax, 0, d.az);
-      for (const sd of [-1, 1]) parts.push(slab(foot.clone().addScaledVector(ac, sd * 1.0).setY(foot.y + 1.0), top.clone().addScaledVector(ac, sd * 1.0).setY(top.y + 1.0), 0.05, 0.05, 0xd8dade));
-      // A paved pad at the top, the sign and a lamp.
-      parts.push(colorize(new THREE.BoxGeometry(4, 0.3, 4).applyMatrix4(M.makeRotationY(Math.atan2(d.ax, d.az))).translate(d.tx - d.nx * 1.5, d.bankY - 0.1, d.tz - d.nz * 1.5), 0x9a968c));
-      const sp = top.clone().addScaledVector(ac, 2.2).addScaledVector(new THREE.Vector3(d.nx, 0, d.nz), -1.2), lp = top.clone().addScaledVector(ac, -2.2).addScaledVector(new THREE.Vector3(d.nx, 0, d.nz), -1.2);
-      parts.push(colorize(new THREE.BoxGeometry(0.12, 3.2, 0.12).translate(sp.x, sp.y + 1.6, sp.z), 0x3a3d40));
-      parts.push(colorize(new THREE.BoxGeometry(0.12, 4.2, 0.12).translate(lp.x, lp.y + 2.1, lp.z), 0x3a3d40));
-      lamps.push(colorize(new THREE.BoxGeometry(0.45, 0.25, 0.45).translate(lp.x, lp.y + 4.3, lp.z), 0xfff1d0));
-      d.signAt = sp;
-      // Status: a light beam, the berth marked on the water, a floating label.
-      d.beam = makeBeam();
-      d.beam.position.copy(this._dockPt(d, 0, W / 2 + 4.5, d.level));
-      d.berth = makeBerth(this, d);
-      d.label = makeLabel();
-      d.label.position.copy(this._dockPt(d, 0, 0, d.y + 7.5));
-      d.sign = makeSign(d, ac);
-      this.root.add(d.beam, d.berth, d.label, d.sign);
-      d.labelText = '';
-    }
-    const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.85 });
-    this.dockMesh = new THREE.Mesh(merge(parts), mat);
-    this.dockMesh.castShadow = true;
-    this.dockMesh.receiveShadow = true;
-    this.lampMat = new THREE.MeshStandardMaterial({ vertexColors: true, emissive: 0xffe6b0, emissiveIntensity: 0 });
-    this.root.add(this.dockMesh, new THREE.Mesh(merge(lamps), this.lampMat));
+    const r = buildLandings(this.docks, this.root);
+    this.dockMesh = r.mesh;
+    this.lampMat = r.lampMat;
   }
 
   // ------------------------------------------------------------ the shift
@@ -675,12 +585,119 @@ export class FerryShift {
   }
 }
 
+// ================================================================ landings
+// A floating landing a couple of metres off the bank near (lat, lon), on the
+// waterway P within the icebreaker reach `zone`: with room for the ship
+// alongside, and a walkway up to dry ground. null if there's no room.
+export function placeLanding(g, P, zone, name, lat, lon, maxBank = 650) {
+  const cw = g.collision, T = g.map.terrain, [z0, z1] = zone, m = g.map.meta;
+  const x = (lon - m.origin.lon) * m.metersPerDegree.lon, z = -(lat - m.origin.lat) * m.metersPerDegree.lat, pr = P.project(x, z, null, {});
+  const side = pr.d >= 0 ? 1 : -1;
+  const probe = new BoatBody('icebreaker'), env = { cw, ice: null };
+  for (const ds of [0, 12, -12, 24, -24, 36, -36, 50, -50, 70, -70, 95, -95, 125, -125]) {
+    const s = pr.s + ds;
+    if (s < z0 + 30 || s > z1 - 30) continue;
+    const c = P.at(s, 0, {}), bx = -c.tz * side, bz = c.tx * side;
+    let bank = 0;
+    for (let d = 4; d < maxBank; d += 0.5) if (!cw.isWaterSurface(c.x + bx * d, c.z + bz * d)) { bank = d; break; }
+    if (bank < 25) continue;
+    const ax = c.tx, az = c.tz, nx = -bx, nz = -bz;
+    const mid = bank - 2.5 - W / 2, cx = c.x + bx * mid, cz = c.z + bz * mid;
+    const at = (u, v) => [cx + ax * u + nx * v, cz + az * u + nz * v];
+    if ([[-1, -1], [1, -1], [1, 1], [-1, 1], [0, -1], [0, 1], [-0.5, 0], [0.5, 0]].some(([u, v]) => !cw.isWaterSurface(...at((u * L) / 2, (v * W) / 2)))) continue;
+    const level = T.h(cx, cz);
+    probe.level = level;
+    // Room for the ship alongside, and to pull in and out.
+    const sv = W / 2 + GAP + BREAKER.gangX, h = Math.atan2(ax, -az);
+    if (!probe.fits(env, ...at(0, sv), h) || !probe.fits(env, ...at(0, sv + 8), h)) continue;
+    // The walkway ashore, from the landing's inner edge to dry ground.
+    const [ix, iz] = at(RAMP_U, -W / 2);
+    let land = 0;
+    for (let d = 0.5; d < 14; d += 0.5) if (!cw.isWaterSurface(ix - nx * d, iz - nz * d)) { land = d; break; }
+    if (!land) continue;
+    const tx = ix - nx * (land + 1.5), tz = iz - nz * (land + 1.5);
+    const y = level + TOP, bankY = Math.max(y + 0.2, T.h(tx, tz));
+    const spots = [];
+    for (let u = -5.6; u <= 5.2 + 1e-6; u += 1.2) for (const v of [-1.25, -0.35]) spots.push({ u: u + (v > -1 ? 0.6 : 0), v, used: false });
+    return {
+      name, s, side, cx, cz, ax, az, nx, nz, level, y, tx, tz, bankY, ix, iz,
+      inland: [tx - nx * 8, tz - nz * 8],
+      spots, groups: [],
+      obstacle: { cx, cz, ax, az, nx, nz, hl: L / 2, hw: W / 2 },
+    };
+  }
+  console.warn(`ferry: no room for a landing at ${name}`);
+  return null;
+}
+
+export function dockPt(d, u, v, y = d.y) { return new THREE.Vector3(d.cx + d.ax * u + d.nx * v, y, d.cz + d.az * u + d.nz * v); }
+
+// Pontoons, shelters, walkways, lamps and name boards for these landings;
+// each also gets a beam, a berth outline and a label (hidden).
+export function buildLandings(docks, root, title = 'ICEBREAKER FERRY') {
+  const parts = [], lamps = [], M = new THREE.Matrix4(), up = new THREE.Vector3(0, 1, 0);
+  // A box with its x along the landing (a) and z across it, centred at dock-local (u, y, v).
+  const ob = (d, u, y, v, sx, sy, sz, hex) => {
+    const a = new THREE.Vector3(d.ax, 0, d.az), zA = new THREE.Vector3().crossVectors(a, up);
+    M.makeBasis(a, up, zA).setPosition(d.cx + d.ax * u + d.nx * v, y, d.cz + d.az * u + d.nz * v);
+    const g = new THREE.BoxGeometry(sx, sy, sz);
+    g.applyMatrix4(M);
+    return colorize(g, hex);
+  };
+  const slab = (a, b, width, thick, hex) => {
+    const len = a.distanceTo(b), g = new THREE.BoxGeometry(width, thick, len);
+    M.lookAt(a, b, up).setPosition((a.x + b.x) / 2, (a.y + b.y) / 2, (a.z + b.z) / 2);
+    g.applyMatrix4(M);
+    return colorize(g, hex);
+  };
+  const signGeo = [];
+  for (const d of docks) {
+    const y0 = d.level;
+    parts.push(ob(d, 0, y0 + 0.05, 0, L, 0.6, W, 0x8b6b4a));                           // pontoon
+    parts.push(ob(d, 0, y0 + TOP + 0.04, W / 2 - 0.15, L, 0.1, 0.3, 0x5a4532));         // edge timber
+    for (let u = -L / 2 + 1.5; u <= L / 2 - 1.5; u += 3) parts.push(ob(d, u, y0 + 0.05, W / 2 + 0.12, 0.6, 0.5, 0.25, 0x18191b)); // fenders
+    for (const u of [-L / 2 + 1, -4, 4, L / 2 - 1]) parts.push(colorize(new THREE.CylinderGeometry(0.14, 0.17, 0.35, 8).translate(...dockPt(d, u, W / 2 - 0.4, y0 + TOP + 0.17).toArray()), 0x3a3d40));
+    // Shelter with a bench.
+    for (const [u, v] of [[-10.6, -1.75], [-10.6, -0.55], [-6.8, -1.75], [-6.8, -0.55]]) parts.push(ob(d, u, y0 + TOP + 1.15, v, 0.1, 2.3, 0.1, 0x4a4f54));
+    parts.push(ob(d, -8.7, y0 + TOP + 2.35, -1.15, 4.4, 0.12, 1.7, 0x2f5f8a));
+    parts.push(ob(d, -8.7, y0 + TOP + 0.24, -1.6, 3.2, 0.08, 0.45, 0x7a5a3c), ob(d, -8.7, y0 + TOP + 0.12, -1.6, 3.0, 0.24, 0.08, 0x4a4f54));
+    // Walkway ashore with handrails.
+    const foot = dockPt(d, RAMP_U, -W / 2 + 0.3, y0 + TOP), top = new THREE.Vector3(d.tx, d.bankY + 0.05, d.tz);
+    parts.push(slab(foot, top, 2.0, 0.14, 0x8b6b4a));
+    const ac = new THREE.Vector3(d.ax, 0, d.az);
+    for (const sd of [-1, 1]) parts.push(slab(foot.clone().addScaledVector(ac, sd * 1.0).setY(foot.y + 1.0), top.clone().addScaledVector(ac, sd * 1.0).setY(top.y + 1.0), 0.05, 0.05, 0xd8dade));
+    // A paved pad at the top, the sign and a lamp.
+    parts.push(colorize(new THREE.BoxGeometry(4, 0.3, 4).applyMatrix4(M.makeRotationY(Math.atan2(d.ax, d.az))).translate(d.tx - d.nx * 1.5, d.bankY - 0.1, d.tz - d.nz * 1.5), 0x9a968c));
+    const sp = top.clone().addScaledVector(ac, 2.2).addScaledVector(new THREE.Vector3(d.nx, 0, d.nz), -1.2), lp = top.clone().addScaledVector(ac, -2.2).addScaledVector(new THREE.Vector3(d.nx, 0, d.nz), -1.2);
+    parts.push(colorize(new THREE.BoxGeometry(0.12, 3.2, 0.12).translate(sp.x, sp.y + 1.6, sp.z), 0x3a3d40));
+    parts.push(colorize(new THREE.BoxGeometry(0.12, 4.2, 0.12).translate(lp.x, lp.y + 2.1, lp.z), 0x3a3d40));
+    lamps.push(colorize(new THREE.BoxGeometry(0.45, 0.25, 0.45).translate(lp.x, lp.y + 4.3, lp.z), 0xfff1d0));
+    d.signAt = sp;
+    // Status: a light beam, the berth marked on the water, a floating label.
+    d.beam = makeBeam();
+    d.beam.position.copy(dockPt(d, 0, W / 2 + 4.5, d.level));
+    d.berth = makeBerth(d);
+    d.label = makeLabel();
+    d.label.position.copy(dockPt(d, 0, 0, d.y + 7.5));
+    d.sign = makeSign(d, ac, title);
+    root.add(d.beam, d.berth, d.label, d.sign);
+    d.labelText = '';
+  }
+  const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.85 });
+  const mesh = new THREE.Mesh(merge(parts), mat);
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  const lampMat = new THREE.MeshStandardMaterial({ vertexColors: true, emissive: 0xffe6b0, emissiveIntensity: 0 });
+  root.add(mesh, new THREE.Mesh(merge(lamps), lampMat));
+  return { mesh, lampMat };
+}
+
 function dist1(s, z) { return s < z[0] ? z[0] - s : s > z[1] ? s - z[1] : 0; }
 
 // ================================================================ people
 // Everyone on the landings and the ship: instanced coats, heads, hats, arms
 // and legs, posed each frame (legs and arms swing as they walk).
-class Crowd {
+export class Crowd {
   constructor(parent, n) {
     this.n = n;
     const mat = () => new THREE.MeshStandardMaterial({ roughness: 0.85 });
@@ -729,7 +746,8 @@ class Crowd {
   }
 
   // A person standing at (x, y, z) facing compass heading h (models face -z).
-  pose(i, x, y, z, h, swing, bob, scale) {
+  // arms: optional [left, right] swing angles of their own (waving: about pi).
+  pose(i, x, y, z, h, swing, bob, scale, arms = null) {
     if (i < 0) return;
     const R = this._r, Lm = this._l, O = this._o;
     R.makeRotationY(-h).scale(this._s.set(scale, scale, scale)).setPosition(x, y, z);
@@ -745,8 +763,8 @@ class Crowd {
     else this.hat.setMatrixAt(i, this._zero);
     part(this.legs, 2 * i, -0.11, 0.84, 0, swing);
     part(this.legs, 2 * i + 1, 0.11, 0.84, 0, -swing);
-    part(this.arms, 2 * i, -0.3, 1.4 + bob, 0, -swing * 0.8);
-    part(this.arms, 2 * i + 1, 0.3, 1.4 + bob, 0, swing * 0.8);
+    part(this.arms, 2 * i, -0.3, 1.4 + bob, 0, arms ? arms[0] : -swing * 0.8);
+    part(this.arms, 2 * i + 1, 0.3, 1.4 + bob, 0, arms ? arms[1] : swing * 0.8);
   }
 
   flush() { for (const m of this.all) m.instanceMatrix.needsUpdate = true; }
@@ -781,7 +799,7 @@ function merge(parts) {
 }
 
 // The gangway: a metal plank with handrails along +z, scaled to length.
-function makeGangway() {
+export function makeGangway() {
   const g = new THREE.Group(), mat = new THREE.MeshStandardMaterial({ color: 0x9aa1a6, roughness: 0.5, metalness: 0.4 });
   const plank = new THREE.Mesh(new THREE.BoxGeometry(1.15, 0.07, 1).translate(0, 0, 0.5), mat);
   plank.castShadow = true;
@@ -792,7 +810,7 @@ function makeGangway() {
 }
 
 // A column of light over a landing with business (as for race checkpoints).
-function makeBeam() {
+export function makeBeam() {
   const geo = new THREE.CylinderGeometry(4, 4, 40, 40, 1, true).translate(0, 20, 0);
   const m = new THREE.Mesh(geo, new THREE.ShaderMaterial({
     uniforms: { uColor: { value: new THREE.Color(0x4dff88) }, uTime: { value: 0 } },
@@ -812,12 +830,12 @@ function makeBeam() {
 }
 
 // The berth alongside a landing, outlined on the water.
-function makeBerth(f, d) {
+function makeBerth(d) {
   const v0 = W / 2 + 0.4, v1 = v0 + 7.2 + 1.4, u0 = -L / 2 - 1, u1 = L / 2 + 1, t = 0.35;
   const quads = [[u0, v0, u1, v0 + t], [u0, v1 - t, u1, v1], [u0, v0, u0 + t, v1], [u1 - t, v0, u1, v1]];
   const pos = [];
   for (const [a, b, c, e] of quads) {
-    const P = (u, v) => { const p = f._dockPt(d, u, v, d.level + 0.07); return [p.x, p.y, p.z]; };
+    const P = (u, v) => { const p = dockPt(d, u, v, d.level + 0.07); return [p.x, p.y, p.z]; };
     pos.push(...P(a, b), ...P(c, b), ...P(c, e), ...P(a, b), ...P(c, e), ...P(a, e));
   }
   const g = new THREE.BufferGeometry();
@@ -829,7 +847,7 @@ function makeBerth(f, d) {
 }
 
 // Floating label over a landing: its name and who is waiting / getting off.
-function makeLabel() {
+export function makeLabel() {
   const cv = document.createElement('canvas');
   cv.width = 512; cv.height = 192;
   const tex = new THREE.CanvasTexture(cv);
@@ -841,7 +859,7 @@ function makeLabel() {
   return s;
 }
 
-function drawLabel(sprite, name, lines, color, active) {
+export function drawLabel(sprite, name, lines, color, active) {
   const cv = sprite.userData.canvas, ctx = cv.getContext('2d');
   ctx.clearRect(0, 0, cv.width, cv.height);
   const h = 60 + lines.length * 40;
@@ -865,7 +883,7 @@ function roundRect(ctx, x, y, w, h, r) {
 }
 
 // The landing's name board on its post, readable from the river and the bank.
-function makeSign(d, ac) {
+function makeSign(d, ac, title = 'ICEBREAKER FERRY') {
   const cv = document.createElement('canvas');
   cv.width = 512; cv.height = 160;
   const ctx = cv.getContext('2d');
@@ -873,7 +891,7 @@ function makeSign(d, ac) {
   ctx.fillStyle = '#ffffff'; ctx.fillRect(8, 8, 496, 4); ctx.fillRect(8, 148, 496, 4);
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   ctx.font = '700 30px Inter, Segoe UI, sans-serif';
-  ctx.fillText('ICEBREAKER FERRY', 256, 42);
+  ctx.fillText(title, 256, 42);
   ctx.font = '800 44px Inter, Segoe UI, sans-serif';
   ctx.fillText(d.name, 256, 104, 480);
   const tex = new THREE.CanvasTexture(cv);

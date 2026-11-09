@@ -99,7 +99,7 @@ class Game {
     await nextFrame();
     this.collision = new CollisionWorld(map, world);
     // The Charles and the ponds freeze in a cold snap (ice.js).
-    this.ice = new RiverIce(map);
+    this.ice = new RiverIce(map, this.collision);
     this.collision.ice = this.ice;
     this.signs = new StreetSigns(map, graph, this.scene, this.collision);
     progress(0.9, 'Drawing the map');
@@ -399,7 +399,7 @@ class Game {
 
   restart() {
     if (this.trainMode.active) { this.beginTrain(this.trainMode.run.index); return; }
-    if (this.boatMode.active) { const r = this.boatMode.race, f = this.boatMode.ferry; this.beginBoat(r ? { race: r.def.id } : f ? { ferry: f.route.id } : { type: this.boatMode.type }); return; }
+    if (this.boatMode.active) { const bm = this.boatMode, r = bm.race, f = bm.ferry, rs = bm.rescue, sr = bm.seaRace; this.beginBoat(r ? { race: r.def.id } : f ? { ferry: f.route.id } : rs ? { rescue: rs.def.id } : sr ? { searace: sr.def.id } : bm.tow ? { tow: bm.tow.def.id } : { type: bm.type }); return; }
     const m = this.missions.mode;
     if (m === 'race') this.begin('race', this.missions.race?.def.id || this.modeArg);
     else if (m === 'taxi') this.begin('taxi');
@@ -458,7 +458,7 @@ class Game {
 
   // ---------------------------------------------------------- on the water
   // opts: { type } from a dock, { type, at } from the car, { race } for a
-  // regatta, { ferry } for an Icebreaker Ferry shift.
+  // regatta, { ferry } for an Icebreaker Ferry shift, { rescue } for a Harbor Rescue call.
   beginBoat(opts = {}) {
     this.leaveFly();
     this.endTrain();
@@ -468,16 +468,23 @@ class Game {
     this.bigmap.show(false);
     this.missions.clear();
     this.missions.arrow.visible = false;
-    if (opts.type && !opts.race && !opts.ferry) { this.settings.boat = opts.type; saveJSON('rb.settings', this.settings); }
-    // The ferry runs in a cold snap: the Charles freezes for the shift (the
-    // weather setting comes back afterwards).
-    if (opts.ferry && (this.weather.mode !== 'snow' || this.ice.level < 0.8)) {
+    if (opts.type && !opts.race && !opts.ferry && !opts.rescue && !opts.searace && !opts.tow) { this.settings.boat = opts.type; saveJSON('rb.settings', this.settings); }
+    // Race day at sea: a frozen harbour is cleared (and the weather comes back afterwards).
+    if (opts.searace && (this.ice.level > 0.05 || this.weather.state.snow > 0.2)) {
+      this.weather.setMode('clear', true);
+      this.ice.setLevel(0);
+      this.iceWas = 0;
+      this.coldSnap = true;   // (restores the weather setting the same way)
+    }
+    // The ferry and the rescues run in a cold snap: the Charles and the
+    // harbour freeze for them (the weather setting comes back afterwards).
+    if ((opts.ferry || opts.rescue || opts.tow) && (this.weather.mode !== 'snow' || this.ice.level < 0.8)) {
       this.weather.setMode('snow', true);
       this.ice.setLevel(1);
       this.iceWas = 1;
       this.coldSnap = true;
     }
-    if (!this.boatMode.start(opts)) { this.endColdSnap(); this.hud.toast(opts.ferry ? 'No room for the ferry landings' : 'No river in this map', '', 1800); return; }
+    if (!this.boatMode.start(opts)) { this.endColdSnap(); this.hud.toast(opts.ferry ? 'No room for the ferry landings' : opts.rescue || opts.searace ? 'No open harbor here' : 'No river in this map', '', 1800); return; }
     this.state = 'boat';
     this.pausedFrom = null;
     this.hud.show(true);
@@ -488,7 +495,10 @@ class Game {
     this.sinking = 0;
     const T = BOAT_TYPES[this.boatMode.type];
     if (opts.ferry) this.hud.toast(`Icebreaker Ferry · ${this.boatMode.ferry.route.name}`, this.coldSnap ? 'A cold snap: the Charles has frozen over' : 'Pick up and drop off along the river', 3600);
-    else if (!opts.race) this.hud.toast(T.name, T.row ? 'W row · Shift power ten · S hold water · E go ashore' : T.breaker ? 'W ahead · S astern · A D helm · H horn · E go ashore' : 'W throttle · S reverse · Shift boost · E go ashore', 3400);
+    else if (opts.searace) { /* (the race's own toast) */ }
+    else if (opts.tow) this.hud.toast(`Icebreaker Tow · ${this.boatMode.tow.def.ship}`, 'Out to her, break her free, pass a line and tow her in', 4200);
+    else if (opts.rescue) this.hud.toast(`Harbor Rescue · ${this.boatMode.rescue.def.name}`, `${this.boatMode.rescue.total} people in the ice: get them all aboard before time runs out`, 4200);
+    else if (!opts.race) this.hud.toast(T.name, T.paddle ? 'W paddle · Shift sprint · S back-paddle · E go ashore' : T.row ? 'W row · Shift power ten · S hold water · E go ashore' : T.diesel ? 'W ahead · S astern · A D helm · H horn · E go ashore' : 'W throttle · S reverse · Shift boost · E go ashore', 3400);
   }
 
   // After a ferry shift, the weather goes back to the setting.
@@ -511,18 +521,20 @@ class Game {
   }
 
   // E in a boat: step ashore onto the nearest road (or across the ice, frozen in).
-  goAshore() {
+  // at: { road, heading, toast: [text, sub] } when an icebreaker puts you ashore.
+  goAshore(at = null) {
     const bm = this.boatMode, b = bm.body;
-    const r = bm.findShore(bm.frozenIn > 2);
+    const r = (at && at.road) || bm.findShore(bm.frozenIn > 2 || !!at);
     if (!r) { this.hud.toast('Too far from the bank', 'Steer in close to the shore and press E', 1800); return; }
-    const h = b.heading;
+    const h = at ? at.heading : b.heading;
     if (bm.race) this.missions.clear();
     this.endBoat();
     this.state = 'play';
     this.missions.startFree();
     this.placeOnRoad(r, h);
     this.input.clearActions();
-    this.hud.toast('Back on dry land', 'E beside the water to take a boat out again', 2200);
+    if (at) this.hud.toast(at.toast[0], at.toast[1], 3600);
+    else this.hud.toast('Back on dry land', 'E beside the water to take a boat out again', 2200);
   }
 
   // E in the car, stopped by the water: launch the last boat you used.
@@ -531,6 +543,12 @@ class Game {
     if (this.missions.mode !== 'free') { this.hud.toast('Boats are in Free Roam', 'Finish or quit the race first', 2000); return; }
     if (c.speed > 6) { this.hud.toast('Stop by the water first', 'Then press E to take a boat out', 1600); return; }
     const at = this.boatMode.findLaunch(c.x, c.z, c.heading, type);
+    if (!at && BOAT_TYPES[type].sea) {
+      // Sea boats only go out into the harbour.
+      let harbor = false;
+      for (let k = 0; k < 16 && !harbor; k++) for (const r of [20, 45, 90]) { const a = (k / 16) * Math.PI * 2; if (this.ice.waterAt(c.x + Math.cos(a) * r, c.z + Math.sin(a) * r) === 'sea') harbor = true; }
+      if (!harbor) { this.hud.toast(`The ${BOAT_TYPES[type].name.toLowerCase()} keeps to the harbor`, 'Stop beside the harbor and press E', 2400); return; }
+    }
     if (!at && this.ice.level > 0.4) { this.hud.toast('The water here is frozen', 'Try an icebreaker channel, the harbor, or wait for a thaw', 2400); return; }
     if (!at) { this.hud.toast('No open water here', 'Stop beside the river or the harbor and press E', 2000); return; }
     this.beginBoat({ type, at });
@@ -624,10 +642,11 @@ class Game {
       const ov = this.trainMode.active ? this.trainMode.overlays() : this.boatMode.active ? this.boatMode.overlays() : this.missions.overlays();
       this.bigmap.draw(me, { ...ov, cars: this.traffic.positions(), trains: this.trains.positions(), planes: this.planes.positions(), boats: this.boats.positions() });
     }
+    // (boat, not boating: an icebreaker can put you ashore during this frame's update.)
     const boat = this.boatMode.active ? this.boatMode.body : null;
-    this.audio.update(boat || this.car, this.effectiveInput || this.input.state, (playing && !this.sinking) || (boating && boat.T.motor && !boat.T.breaker));
-    if (!boating || !boat.T.breaker) { this.audio.setDiesel(0); this.audio.setShipHorn(false); }
-    this.audio.setHull(boating ? Math.min(1, boat.speed / 12) : 0);
+    this.audio.update(boat || this.car, this.effectiveInput || this.input.state, (playing && !this.sinking) || (!!boat && boat.T.motor && !boat.T.diesel));
+    if (!boat || !boat.T.diesel) { this.audio.setDiesel(0); this.audio.setShipHorn(false); }
+    this.audio.setHull(boat ? Math.min(1, boat.speed / 12) : 0);
     this.audio.setCrunch(this.state === 'menu' ? 0 : this.boats.crunch);
     const ear = this.state === 'fly' ? this.fly : this.trainMode.active ? this.trainMode.pose(this._ear || (this._ear = {})) : this.boatMode.active ? this.boatMode.pose(this._ear || (this._ear = {})) : this.car;
     this.audio.setRumble(this.state === 'menu' ? 0 : this.trains.rumble(ear.x, ear.z) * (this.state === 'fly' ? Math.max(0, 1 - Math.max(0, this.fly.y) / 120) : 1));
@@ -663,7 +682,7 @@ class Game {
     const l = this.ice.level, was = this.iceWas;
     this.iceWas = l;
     if (this.state === 'menu' || !this.hud) return;
-    if (was < 0.8 && l >= 0.8) this.hud.toast('The Charles has frozen over', 'Icebreakers are out · drive on the ice at your own risk', 4200);
+    if (was < 0.8 && l >= 0.8) this.hud.toast('The Charles and the harbor have frozen over', 'Icebreakers are out · drive on the ice at your own risk', 4200);
     else if (was < 0.15 && l >= 0.15) this.hud.toast('Ice is forming on the Charles', 'Boats are heading in', 3000);
     else if (was >= 0.5 && l < 0.5) this.hud.toast('The ice is breaking up', 'Keep off the river', 3000);
   }
@@ -720,10 +739,15 @@ class Game {
       if (inp.take('weather')) this.cycleWeather();
       if (inp.take('reset') && !(this.boatMode.race && !this.boatMode.race.started)) this.boatMode.reset();
       if (inp.take('board')) {
-        if (this.boatMode.race && !this.boatMode.race.done) this.hud.toast('Racing!', 'Finish the Head of the Charles first (Esc to quit)', 1800);
+        if (this.boatMode.pickup) { if (!this.boatMode.pickup.skip()) this.hud.toast('Sit tight', `The crew of ${this.boatMode.pickup.ib.name} have it in hand`, 1600); }
+        else if (this.boatMode.race && !this.boatMode.race.done) this.hud.toast('Racing!', 'Finish the Head of the Charles first (Esc to quit)', 1800);
         else if (this.boatMode.ferry && !this.boatMode.ferry.over) this.hud.toast('On shift!', 'Finish the ferry shift first (Esc to quit)', 1800);
+        else if (this.boatMode.rescue && !this.boatMode.rescue.over) this.hud.toast('On a rescue!', 'Get everyone aboard first (Esc to quit)', 1800);
+        else if (this.boatMode.seaRace && !this.boatMode.seaRace.done) this.hud.toast('Racing!', 'Finish the race first (Esc to quit)', 1800);
+        else if (this.boatMode.tow && !this.boatMode.tow.over) this.hud.toast('On a tow!', 'Bring her in first (Esc to quit)', 1800);
         else this.goAshore();
       }
+      if (inp.take('help')) this.boatMode.callHelp();
       if (inp.take('fly')) this.hud.toast('Fly mode is in Free Roam', 'Go ashore first (E)', 2000);
       inp.clearActions();
       return;
@@ -1029,13 +1053,15 @@ class Game {
       })() : null,
       planes: this.planes.stats(),
       weather: { mode: this.weather.mode, type: this.weather.type, ...this.weather.state, grip: this.weather.grip, post: this.post.enabled, rainOn: this.weather.rain.visible, snowOn: this.weather.snow.visible },
-      ice: { level: this.ice.level, front: this.ice.front, frozen: this.ice.frozen, broken: this.ice.brokenList.length, onIce: !!c.onIce },
+      ice: { level: this.ice.level, front: this.ice.front, frozen: this.ice.frozen, broken: this.ice.brokenCount, onIce: !!c.onIce },
       boats: this.boats.list.map((b) => ({ type: b.type, role: b.role, s: Math.round(b.s), v: +b.v.toFixed(1) })),
       boat: this.boatMode.active ? (() => {
         const bm = this.boatMode, b = bm.body, r = bm.race;
         return { type: bm.type, x: b.x, z: b.z, y: b.y, heading: b.heading, speed: b.speed, vF: b.vF, rate: b.rate, ice: b.iceState, impact: bm.impact || 0, frozenIn: bm.frozenIn,
           race: r ? { started: r.started, t0: r.t0, time: r.time, penalty: r.penalty, next: r.next, splits: r.splits, done: r.done, s: bm.path.project(b.x, b.z, r.sPrev, {}).s, start: bm.course.start, finish: bm.course.finish } : null,
-          ferry: bm.ferry ? (() => { const f = bm.ferry; return { route: f.route.id, docks: f.docks.length, started: f.started, over: f.over, stage: f.moor ? f.moor.stage : null, aboard: f.aboard.length, waiting: f.groups.reduce((n, gp) => n + gp.people.length, 0), money: f.money, carried: f.carried, clock: f.clock, people: f.people.length }; })() : null };
+          ferry: bm.ferry ? (() => { const f = bm.ferry; return { route: f.route.id, docks: f.docks.length, started: f.started, over: f.over, stage: f.moor ? f.moor.stage : null, aboard: f.aboard.length, waiting: f.groups.reduce((n, gp) => n + gp.people.length, 0), money: f.money, carried: f.carried, clock: f.clock, people: f.people.length }; })() : null,
+          rescue: bm.rescue ? (() => { const rs = bm.rescue; return { id: rs.def.id, sites: rs.sites.length, total: rs.total, saved: rs.saved, clock: rs.clock, over: rs.over, won: rs.won, plank: rs.plank ? rs.plank.stage : null, ring: rs.ring.state, onHull: rs.people.filter((p) => p.where === 'hull').length, inWater: rs.people.filter((p) => p.where === 'water').length, sea: this.ice.waterAt(b.x, b.z) === 'sea' }; })() : null,
+          help: bm.help && bm.help.boat.help ? (() => { const h = bm.help.boat.help; return { name: bm.help.boat.name, phase: h.phase, dist: h.dist, safe: !!h.safe, shore: h.shore ? h.shore.D : null }; })() : null };
       })() : null,
     };
   }

@@ -88,10 +88,13 @@ export async function buildWorld(map, graph, scene, progress = () => {}) {
     const S = 40000;
     addPolygon(outer, [Float32Array.from([-S, S, S, S, S, -S, -S, -S])], -0.4, LAND_COLOR);
     add(meshOf(outer.build(), mats.far, -64));
-    const sea = new GeoBuilder({});
+    // The open sea: freezes over too in a cold snap (aIce 3, ice.js).
+    const sea = new GeoBuilder({ aIce: [Uint8Array, 1, false] });
     sea.pos.p3(wb.minX, 0, wb.minZ); sea.pos.p3(wb.maxX, 0, wb.minZ); sea.pos.p3(wb.maxX, 0, wb.maxZ); sea.pos.p3(wb.minX, 0, wb.maxZ);
+    for (let k = 0; k < 4; k++) sea.attrs.aIce.buf.p1(3);
     sea.idx.p3(0, 3, 2); sea.idx.p3(0, 2, 1);
-    add(meshOf(sea.build(), mats.water, -63));
+    mats.waterIce = MAT.makeWaterMaterial({ ice: true });
+    add(meshOf(sea.build(), mats.waterIce, -63));
   }
   // ------------------------------------------------------- land
   {
@@ -130,11 +133,11 @@ export async function buildWorld(map, graph, scene, progress = () => {}) {
     }
     add(meshOf(drape(areas.build()), mats.ground, -45));
     // Water bodies, each flat at its own surface level; aIce says what
-    // freezes in a cold snap (the Charles, ponds; see ice.js).
+    // freezes in a cold snap (the Charles, ponds, and harbour water at sea
+    // level with the open sea; see ice.js).
     const water = new GeoBuilder({ aIce: [Uint8Array, 1, false] });
-    mats.waterIce = MAT.makeWaterMaterial({ ice: true });
     map.water.forEach((p, wi) => {
-      const level = map.waterLevels[wi], kind = map.waterKind[wi];
+      const level = map.waterLevels[wi], kind = map.waterKind[wi] || (level < 0.3 ? 3 : 0);
       const flat = [], holes = [];
       p.forEach((r, k) => { if (k) holes.push(flat.length / 2); for (const v of r) flat.push(v); });
       const tri = earcut(flat, holes.length ? holes : null, 2);

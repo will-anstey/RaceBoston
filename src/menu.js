@@ -7,6 +7,9 @@ import { trainLines } from './trainmode.js';
 import { LINE_COLOR } from './railworld.js';
 import { REGATTAS, ordinal } from './boatmode.js';
 import { FERRY_ROUTES } from './ferry.js';
+import { RESCUES } from './rescue.js';
+import { SEA_RACES, ordinalOf } from './searace.js';
+import { TOW_JOBS } from './tow.js';
 import { BOAT_TYPES, BOAT_ORDER } from './boats.js';
 
 export const CARS = [
@@ -116,6 +119,9 @@ export class Menu {
       case 'boat': g.beginBoat({ type: arg }); break;
       case 'regatta': g.beginBoat({ race: arg }); break;
       case 'ferry': g.beginBoat({ ferry: arg }); break;
+      case 'rescue': g.beginBoat({ rescue: arg }); break;
+      case 'searace': g.beginBoat({ searace: arg }); break;
+      case 'tow': g.beginBoat({ tow: arg }); break;
       case 'races': this.show('races'); break;
       case 'race': g.begin('race', arg); break;
       case 'taxi': g.begin('taxi'); break;
@@ -156,7 +162,7 @@ export class Menu {
         <button class="menu-btn primary" data-act="free"><span>Free Roam<span class="desc">Explore and discover ${g.map.landmarks.length} landmarks (${g.missions.discovered.size} found)</span></span><span class="meta">&#9654;</span></button>
         <button class="menu-btn" data-act="fly"><span>Fly Around<span class="desc">Ghost camera: fly anywhere, through anything</span></span><span class="meta">&#9654;</span></button>
         <button class="menu-btn" data-act="lines"><span>Drive a Train<span class="desc">Red, Orange, Blue and Green Lines and the commuter rail, through the subway</span></span><span class="meta">&#9656;</span></button>
-        <button class="menu-btn" data-act="water"><span>On the Water<span class="desc">Motorboats, rowing shells and the icebreaker ferry &middot; race the Head of the Charles</span></span><span class="meta">&#9656;</span></button>
+        <button class="menu-btn" data-act="water"><span>On the Water<span class="desc">Motorboats, rowing, tugs and ferries &middot; the Head of the Charles and races at sea &middot; the icebreaker&rsquo;s ferry, rescues and tows</span></span><span class="meta">&#9656;</span></button>
         <button class="menu-btn" data-act="races"><span>Races<span class="desc">${RACES.length} checkpoint races &middot; ${golds} gold</span></span><span class="meta">&#9656;</span></button>
         <button class="menu-btn" data-act="taxi"><span>Taxi Shift<span class="desc">Best shift $${g.missions.taxiBest.toFixed(2)}</span></span><span class="meta">&#9656;</span></button>
         <button class="menu-btn" data-act="garage"><span>Garage<span class="desc">${esc(car.name)}</span></span><span class="meta">&#9656;</span></button>
@@ -207,10 +213,25 @@ export class Menu {
     const fb = loadJSON('rb.ferryBest', {});
     const ferries = FERRY_ROUTES.map((r) => `<button class="menu-btn" data-act="ferry" data-arg="${r.id}"><span>Icebreaker Ferry: ${esc(r.name)}<span class="desc">${esc(r.blurb)} &middot; pick up and drop off at the landings</span></span>
       <span class="meta">${fb[r.id] ? `Best $${fb[r.id].toFixed(2)}` : '&#9654;'}</span></button>`).join('');
+    const rb = loadJSON('rb.rescueBest', {});
+    const rescues = RESCUES.map((r) => {
+      const n = r.sites.reduce((k, s) => k + s.hull + s.water, 0), b = rb[r.id];
+      return `<button class="menu-btn" data-act="rescue" data-arg="${r.id}"><span>Harbor Rescue: ${esc(r.name)}<span class="desc">${esc(r.blurb)} &middot; ${n} people &middot; ${formatTime(r.time).replace(/\.\d+$/, '')} on the clock</span></span>
+        <span class="meta">${b != null ? `Best ${formatTime(b).replace(/\.\d+$/, '')} to spare` : '&#9654;'}</span></button>`;
+    }).join('');
+    const sb = loadJSON('rb.seaRace', {});
+    const seaRaces = SEA_RACES.map((r) => {
+      const b = sb[r.id], medal = b ? (b.place === 1 ? 'gold' : b.place === 2 ? 'silver' : b.place === 3 ? 'bronze' : 'none') : 'none';
+      return `<button class="menu-btn" data-act="searace" data-arg="${r.id}"><span>Sea Race: ${esc(r.name)}<span class="desc">${esc(r.blurb)} &middot; ${BOAT_TYPES[r.boat].name}s, ${r.field} racing</span></span>
+        <span class="meta">${b ? `${formatTime(b.time)} &middot; ${ordinalOf(b.place)}` : '--:--'}<span class="medal ${medal}"></span></span></button>`;
+    }).join('');
+    const tb = loadJSON('rb.towBest', {});
+    const tows = TOW_JOBS.map((r) => `<button class="menu-btn" data-act="tow" data-arg="${r.id}"><span>Icebreaker Tow: the ${esc(r.ship)}<span class="desc">${esc(r.blurb)} &middot; $${r.fee.toLocaleString()} &middot; ${formatTime(r.time).replace(/\.\d+$/, '')} on the clock</span></span>
+      <span class="meta">${tb[r.id] != null ? `Best $${tb[r.id].toLocaleString()}` : '&#9654;'}</span></button>`).join('');
     const ice = g.ice.frozen ? 'The river is frozen: boats stay in the icebreakers&rsquo; channels, the race course is cleared. ' : '';
     return `<div class="menu-title">On the Water</div>
-      <p class="tagline">${ice}In Free Roam, stop by the river or the harbor and press E to take your last boat out; E near the bank goes ashore.</p>
-      <div class="menu-list">${races}${ferries}${boats}<button class="menu-btn back" data-act="back"><span>&larr; Back</span></button></div>`;
+      <p class="tagline">${ice}In Free Roam, stop by the river or the harbor and press E to take your last boat out; E near the bank goes ashore. Frozen in? Q radios for an icebreaker.</p>
+      <div class="menu-list">${races}${seaRaces}${ferries}${rescues}${tows}${boats}<button class="menu-btn back" data-act="back"><span>&larr; Back</span></button></div>`;
   }
 
   _garage() {
@@ -236,8 +257,14 @@ export class Menu {
       ['G', 'Fly mode (ghost camera)'], ['Fly mode', 'Mouse to look (click), WASD, Space/Q up/down, Shift fast, wheel speed, Enter drop the car'],
       ['Drag', 'Look around (car, boat and train)'], ['Train', 'W power, S brake, Space emergency brake, C cab / chase camera'],
       ['E', 'Take a boat out (stopped by the water) / go ashore'], ['Rowing', 'Hold W to row, Shift power ten, S hold water / back down, A D steer'],
+      ['Canoe', 'Hold W to paddle, Shift sprint, S back-paddle, A D steer'],
       ['Motorboat', 'W throttle, S reverse, A D steer, Shift boost'],
       ['Icebreaker', 'W ahead, S astern, A D helm (bow thruster when stopped), H horn; dock alongside a landing to load'],
+      ['Harbor Rescue', 'Come alongside an upturned hull to take its people off; Space (hold, let go at the mark) throws a life ring'],
+      ['Sea Race', 'Pass every gate between its buoys, in order; R back to the last gate you passed'],
+      ['Icebreaker Tow', 'Break her free down both sides, stop with your stern at her bow to pass the line, take up the slack gently'],
+      ['Tug, ferry, trawler', 'W ahead, S astern, A D helm (thrusters turn them when stopped), H horn; they go out from the harbor'],
+      ['Q', 'In a boat, frozen in: radio for an icebreaker to break you out (a canoe, rowboat or scull she lifts aboard and lands; E skips ahead)'],
       ['K', 'Mute'], ['F', 'Fullscreen'], ['Esc / P', 'Pause'],
       ['Gamepad', 'RT gas, LT brake, A handbrake, B boost, X reset, Y camera, Start pause'],
     ].map(([k, v]) => `<b>${k}</b><span>${v}</span>`).join('');
@@ -250,6 +277,9 @@ export class Menu {
     const restart = g.trainMode.active ? '<button class="menu-btn" data-act="restart"><span>Restart line</span></button>'
       : g.boatMode.active && g.boatMode.race ? '<button class="menu-btn" data-act="restart"><span>Restart race</span></button>'
       : g.boatMode.active && g.boatMode.ferry ? '<button class="menu-btn" data-act="restart"><span>Restart shift</span></button>'
+      : g.boatMode.active && g.boatMode.rescue ? '<button class="menu-btn" data-act="restart"><span>Restart rescue</span></button>'
+      : g.boatMode.active && g.boatMode.seaRace ? '<button class="menu-btn" data-act="restart"><span>Restart race</span></button>'
+      : g.boatMode.active && g.boatMode.tow ? '<button class="menu-btn" data-act="restart"><span>Restart tow</span></button>'
       : g.missions.mode !== 'free' && !g.boatMode.active ? `<button class="menu-btn" data-act="restart"><span>Restart ${g.missions.mode === 'taxi' ? 'shift' : 'race'}</span></button>` : '';
     return `<div class="menu-title">Paused</div><div class="menu-list">
       <button class="menu-btn primary" data-act="resume"><span>Resume</span></button>${restart}
@@ -266,11 +296,45 @@ export class Menu {
   }
 
   _results(r) {
+    if (r.rescue) {
+      const medalName = r.medal ? r.medal[0].toUpperCase() + r.medal.slice(1) + ' medal' : 'No medal';
+      const head = r.won ? `${formatTime(r.left).replace(/\.\d+$/, '')}<span style="font-size:24px;opacity:0.6"> to spare</span>` : `${r.saved}<span style="font-size:24px;opacity:0.6"> / ${r.total}</span>`;
+      const line = r.won ? `<span class="medal ${r.medal || 'none'}"></span> Everyone rescued &middot; ${medalName}${r.record ? ' &middot; <b style="color:#f4c542">New best!</b>' : r.prev != null ? ` &middot; Best ${formatTime(r.prev).replace(/\.\d+$/, '')} to spare` : ''}`
+        : `<b style="color:#ff6b6b">Out of time</b> &middot; ${r.saved} of ${r.total} rescued &middot; ${r.total - r.saved} still in the ice`;
+      return `<div class="menu-title">${esc(r.title)}</div>
+        <div class="brand-top" style="font-size:64px;font-weight:900;font-style:italic;color:${r.won ? '#7ee081' : '#ff6b6b'}">${head}</div>
+        <p class="tagline">${line}</p>
+        <div class="menu-list"><button class="menu-btn primary" data-act="retry"><span>${r.won ? 'Go again' : 'Try again'}</span></button>
+        <button class="menu-btn" data-act="water"><span>On the Water</span><span class="meta">&#9656;</span></button>
+        <button class="menu-btn" data-act="free"><span>Free Roam</span></button><button class="menu-btn back" data-act="home"><span>Main menu</span></button></div>`;
+    }
     if (r.ferry) {
       return `<div class="menu-title">${esc(r.title)}</div>
         <div class="brand-top" style="font-size:64px;font-weight:900;font-style:italic;color:#7ee081">$${r.money.toFixed(2)}</div>
         <p class="tagline">${r.carried} passenger${r.carried === 1 ? '' : 's'} carried &middot; ${r.stops} stop${r.stops === 1 ? '' : 's'} served${r.record ? ' &middot; <b style="color:#f4c542">New best shift!</b>' : r.prev ? ` &middot; Best $${r.prev.toFixed(2)}` : ''}</p>
         <div class="menu-list"><button class="menu-btn primary" data-act="retry"><span>Another shift</span></button>
+        <button class="menu-btn" data-act="water"><span>On the Water</span><span class="meta">&#9656;</span></button>
+        <button class="menu-btn" data-act="free"><span>Free Roam</span></button><button class="menu-btn back" data-act="home"><span>Main menu</span></button></div>`;
+    }
+    if (r.tow) {
+      const head = r.won ? `$${r.fee.toLocaleString()}` : '$0';
+      const line = r.won ? `Delivered to ${esc(r.berth)} in ${formatTime(r.used).replace(/\.\d+$/, '')}${r.bonus ? ` &middot; $${r.bonus.toLocaleString()} for a quick tow` : ''}${r.damage > 0.4 ? ` &middot; damage ${r.damage.toFixed(1)}` : ''}${r.parts ? ` &middot; ${r.parts} line${r.parts > 1 ? 's' : ''} parted` : ''}${r.record ? ' &middot; <b style="color:#f4c542">New best!</b>' : r.prev != null ? ` &middot; Best $${r.prev.toLocaleString()}` : ''}`
+        : '<b style="color:#ff6b6b">Out of time</b> &middot; the owners sent for another icebreaker';
+      return `<div class="menu-title">${esc(r.title)}</div>
+        <div class="brand-top" style="font-size:64px;font-weight:900;font-style:italic;color:${r.won ? '#7ee081' : '#ff6b6b'}">${head}</div>
+        <p class="tagline">${line}</p>
+        <div class="menu-list"><button class="menu-btn primary" data-act="retry"><span>${r.won ? 'Another tow' : 'Try again'}</span></button>
+        <button class="menu-btn" data-act="water"><span>On the Water</span><span class="meta">&#9656;</span></button>
+        <button class="menu-btn" data-act="free"><span>Free Roam</span></button><button class="menu-btn back" data-act="home"><span>Main menu</span></button></div>`;
+    }
+    if (r.searace) {
+      const medalName = r.medal ? r.medal[0].toUpperCase() + r.medal.slice(1) + ' medal' : 'No medal';
+      const rows = r.standings.map((x, i) => `<b>${ordinal(i + 1)}</b><span>${x.you ? '<b style="color:#f4c542">' + esc(x.name) + '</b>' : esc(x.name)} &middot; ${formatTime(x.t)}</span>`).join('');
+      return `<div class="menu-title">${esc(r.title)}</div>
+        <div class="brand-top" style="font-size:64px;font-weight:900;font-style:italic">${formatTime(r.time)}</div>
+        <p class="tagline"><span class="medal ${r.medal || 'none'}"></span> ${ordinal(r.place)} of ${r.of} &middot; ${medalName}${r.record ? ' &middot; <b style="color:#f4c542">New best!</b>' : r.prev ? ` &middot; Best ${formatTime(r.prev)}` : ''}</p>
+        <div class="controls-grid">${rows}</div>
+        <div class="menu-list"><button class="menu-btn primary" data-act="retry"><span>Race again</span></button>
         <button class="menu-btn" data-act="water"><span>On the Water</span><span class="meta">&#9656;</span></button>
         <button class="menu-btn" data-act="free"><span>Free Roam</span></button><button class="menu-btn back" data-act="home"><span>Main menu</span></button></div>`;
     }

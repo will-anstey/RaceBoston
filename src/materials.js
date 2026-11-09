@@ -10,12 +10,14 @@ export const globalUniforms = {
   uWet: { value: 0 }, uSnow: { value: 0 }, uRain: { value: 0 }, uFlash: { value: 0 },
   // River ice (ice.js): freeze level 0..1, how far the sheet reaches from the
   // bank (m), and the broken-ice clock (2 s ticks, mod 256).
-  uIce: { value: 0 }, uIceFront: { value: -1 }, uIceEpoch: { value: 0 },
+  uIce: { value: 0 }, uIceFront: { value: -1 }, uIceFrontSea: { value: -1 }, uIceEpoch: { value: 0 },
 };
-// Ice state textures over the Charles (filled in by RiverIce).
+// Ice state textures over the Charles and the harbour (filled in by RiverIce).
 export const iceUniforms = {
   tIceShore: { value: null }, tIceBroken: { value: null },
   uIceBox: { value: new THREE.Vector4(0, 0, 1, 1) },   // minX, minZ, 1 / width, 1 / depth (m)
+  tSeaShore: { value: null }, tSeaBroken: { value: null },
+  uSeaBox: { value: new THREE.Vector4(0, 0, 1, 1) }, uSeaScale: { value: 6 },
 };
 
 const HASH = /* glsl */ `
@@ -197,8 +199,41 @@ vec3 rbCell(vec2 p) {
 }
 `;
 
-// Water. ice: the river and pond polygons (aIce 1 = the Charles, read from
-// the ice textures; 2 = ponds, which freeze over evenly), else the sea.
+// One sheet of ice from its textures: the sheet grows out from the shore
+// (shore distance in `scale` m units), pancake floes drift ahead of it, and
+// channels cut by icebreakers show slabs of the old sheet in open water, then
+// new grey ice between them, then white again.
+const SHEET = /* glsl */ `
+void rbSheet(vec2 p, vec2 uv, sampler2D tShore, sampler2D tBroken, vec4 box, float scale, float front, float band, float jitAmp, float nz,
+             inout float cov, inout float thin, inout float brash) {
+  float shore = texture2D(tShore, uv).r * 255.0 * scale;
+  float fr = front + (nz - 0.5) * (30.0 + band * 0.1);
+  float sheet = smoothstep(fr + 2.0 * scale, fr - 2.0 * scale, shore);
+  cov = sheet;
+  if (sheet < 0.999 && shore < fr + band) {
+    vec3 c = rbCell(p * 0.16);
+    float floe = smoothstep(0.44, 0.36, c.x) * step(c.z, uIce * 1.7) * smoothstep(fr + band, fr + 8.0, shore);
+    cov = max(sheet, floe * 0.95);
+  }
+  thin = (1.0 - smoothstep(0.12, 0.6, uIce)) * (1.0 - sheet * 0.3);
+  vec2 jit = (vec2(rbNoise(p * 0.45), rbNoise(p * 0.45 + 31.0)) - 0.5) * jitAmp;
+  vec4 b = texture2D(tBroken, uv + jit * box.zw);
+  if (b.a > 0.5) {
+    float age = mod(uIceEpoch - floor(b.r * 255.0 + 0.5) + 256.0, 256.0) * 2.0;
+    vec3 bc = rbCell(p * 0.6 + vec2(0.0, min(age, 30.0) * 0.02));
+    float slab = step(0.5, bc.z) * smoothstep(0.015, 0.05, bc.y);
+    float fill = smoothstep(30.0, 150.0, age);
+    float fresh = 1.0 - smoothstep(150.0, 300.0, age);
+    brash = slab * fresh;
+    cov = mix(cov, max(slab * 0.9, fill), fresh * sheet);
+    thin = mix(thin, max(1.0 - slab, 0.0) * (1.0 - fill * 0.5), fresh * sheet);
+  }
+}
+`;
+
+// Water. ice: the river, pond and harbour polygons and the open sea (aIce
+// 1 = the Charles and 3 = the harbour, each read from its ice textures;
+// 2 = ponds, which freeze over evenly), else water that never freezes.
 export function makeWaterMaterial({ ice = false } = {}) {
   const m = new THREE.MeshStandardMaterial({ color: 0x2f5f86, roughness: 0.06, metalness: 0.0, envMapIntensity: 1.1, flatShading: true });
   if (ice) m.defines = { RB_ICE: '' };
@@ -208,10 +243,11 @@ export function makeWaterMaterial({ ice = false } = {}) {
     vPars: ice ? 'attribute float aIce; varying float vIceKind;' : '',
     vMain: ice ? 'vIceKind = aIce;' : '',
     fPars: ice ? `varying float vIceKind;
-      uniform float uIce, uIceFront, uIceEpoch;
-      uniform sampler2D tIceShore, tIceBroken;
-      uniform vec4 uIceBox;
-      ${CELLS}` : '',
+      uniform float uIce, uIceFront, uIceFrontSea, uIceEpoch, uSeaScale;
+      uniform sampler2D tIceShore, tIceBroken, tSeaShore, tSeaBroken;
+      uniform vec4 uIceBox, uSeaBox;
+      ${CELLS}
+      ${SHEET}` : '',
     fNormal: /* glsl */ `
       {
         vec2 p = vWPos.xz;
@@ -232,36 +268,14 @@ export function makeWaterMaterial({ ice = false } = {}) {
       #ifdef RB_ICE
       if (uIce > 0.001 && vIceKind > 0.5) {
         vec2 p = vWPos.xz;
-        vec2 uv = (p - uIceBox.xy) * uIceBox.zw;
         float nz = rbNoise(p * 0.03) * 0.65 + rbNoise(p * 0.11) * 0.35;
-        if (vIceKind < 1.5 && uv.x > 0.0 && uv.y > 0.0 && uv.x < 1.0 && uv.y < 1.0) {
-          // The sheet grows out from the banks; pancake floes drift ahead of it.
-          float shore = texture2D(tIceShore, uv).r * 255.0;
-          float front = uIceFront + (nz - 0.5) * 30.0;
-          float sheet = smoothstep(front + 2.0, front - 2.0, shore);
-          rbIceCov = sheet;
-          if (sheet < 0.999 && shore < front + 150.0) {
-            vec3 c = rbCell(p * 0.16);
-            float floe = smoothstep(0.44, 0.36, c.x) * step(c.z, uIce * 1.7) * smoothstep(front + 150.0, front + 8.0, shore);
-            rbIceCov = max(sheet, floe * 0.95);
-          }
-          rbIceThin = (1.0 - smoothstep(0.12, 0.6, uIce)) * (1.0 - sheet * 0.3);
-          // Channels cut by the icebreakers: slabs of the old sheet in open
-          // water, then new grey ice between them, then white again.
-          vec2 jit = (vec2(rbNoise(p * 0.45), rbNoise(p * 0.45 + 31.0)) - 0.5) * 6.0;
-          vec4 b = texture2D(tIceBroken, uv + jit * uIceBox.zw);
-          if (b.a > 0.5) {
-            float age = mod(uIceEpoch - floor(b.r * 255.0 + 0.5) + 256.0, 256.0) * 2.0;
-            vec3 bc = rbCell(p * 0.6 + vec2(0.0, min(age, 30.0) * 0.02));
-            float slab = step(0.5, bc.z) * smoothstep(0.015, 0.05, bc.y);
-            float fill = smoothstep(30.0, 150.0, age);
-            float fresh = 1.0 - smoothstep(150.0, 300.0, age);
-            rbBrash = slab * fresh;
-            rbIceCov = mix(rbIceCov, max(slab * 0.9, fill), fresh * sheet);
-            rbIceThin = mix(rbIceThin, max(1.0 - slab, 0.0) * (1.0 - fill * 0.5), fresh * sheet);
-          }
-        } else {
-          // Ponds (and the river beyond the map) ice over evenly.
+        vec2 uvR = (p - uIceBox.xy) * uIceBox.zw, uvS = (p - uSeaBox.xy) * uSeaBox.zw;
+        bool inR = vIceKind < 1.5 && uvR.x > 0.0 && uvR.y > 0.0 && uvR.x < 1.0 && uvR.y < 1.0;
+        bool inS = vIceKind > 2.5 && uvS.x > 0.0 && uvS.y > 0.0 && uvS.x < 1.0 && uvS.y < 1.0;
+        if (inR) rbSheet(p, uvR, tIceShore, tIceBroken, uIceBox, 1.0, uIceFront, 150.0, 6.0, nz, rbIceCov, rbIceThin, rbBrash);
+        else if (inS) rbSheet(p, uvS, tSeaShore, tSeaBroken, uSeaBox, uSeaScale, uIceFrontSea, 300.0, 9.0, nz, rbIceCov, rbIceThin, rbBrash);
+        else {
+          // Ponds (and water beyond the map) ice over evenly.
           rbIceCov = smoothstep(0.3, 0.5, uIce + (nz - 0.5) * 0.25);
           rbIceThin = 1.0 - smoothstep(0.35, 0.8, uIce);
         }

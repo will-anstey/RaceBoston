@@ -60,6 +60,11 @@ html, body {
 #mission .m-time { font-size: 30px; font-weight: 800; margin-top: 6px; font-variant-numeric: tabular-nums; letter-spacing: 0.02em; }
 #mission .m-extra { font-size: 13px; color: var(--muted); margin-top: 4px; font-variant-numeric: tabular-nums; }
 #mission .m-time.urgent { color: #ff6b6b; }
+/* Harbor Rescue: the life ring's throw. Green: they'll swim for it; bright: a straight catch. */
+#mission .throw { position: relative; height: 12px; margin: 6px 0 5px; border-radius: 6px; background: rgba(255, 255, 255, 0.13); overflow: hidden; }
+#mission .throw i { position: absolute; top: 0; bottom: 0; background: rgba(126, 224, 129, 0.35); }
+#mission .throw u { position: absolute; top: 0; bottom: 0; background: rgba(126, 224, 129, 0.85); }
+#mission .throw b { position: absolute; top: -2px; bottom: -2px; width: 4px; margin-left: -2px; background: #ffd447; box-shadow: 0 0 6px #ffd447; }
 
 #score {
   position: absolute;
