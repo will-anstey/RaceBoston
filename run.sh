@@ -25,6 +25,8 @@ need_tools=0
 [ -f vendor/three/addons/postprocessing/EffectComposer.js ] || need_tools=1
 
 if [ "$need_tools" = 1 ]; then
+  # The map tools aren't part of the repository (only what the game needs to run is).
+  [ -f tools/build-map.mjs ] && [ -f package.json ] || { echo "The map tools (tools/, package.json) aren't here; the game itself needs only data/, src/ and vendor/."; exit 1; }
   [ -n "$NODE" ] || { echo "Node 18+ is required to fetch dependencies/map data (brew install node)."; exit 1; }
   NPM="$(dirname "$NODE")/npm"
   echo "Installing npm dependencies..."

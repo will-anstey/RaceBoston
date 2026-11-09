@@ -18,6 +18,7 @@ done
 [ -n "$NODE" ] || { echo "Node 18+ is required (brew install node)."; exit 1; }
 
 if [ "${1:-}" = "--rebuild" ] || [ ! -f index.html ]; then
+  [ -f tools/build.mjs ] || { echo "The Retro build tools aren't here; the game files are already built."; exit 1; }
   "$NODE" tools/build.mjs
   tools/compile-applet.sh || echo "(kept the prebuilt RetroRace.class)"
 fi

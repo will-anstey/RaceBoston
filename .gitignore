@@ -2,3 +2,13 @@ node_modules/
 tools/.cache/
 tools/screenshots/
 .DS_Store
+
+# Only what the game needs to run goes on GitHub: no screenshots, map-building
+# or test tools, npm setup, or the Retro build scripts and Java source.
+docs/
+tools/*
+!tools/serve.mjs
+package.json
+package-lock.json
+Retro/tools/
+Retro/src/

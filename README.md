@@ -22,19 +22,6 @@ banks inward. You can drive on the ice, and icebreakers come out to cut channels
 the helm of an icebreaker ferry, carrying commuters between landings on the frozen river: they walk
 down to the landing, up the gangway and onto the foredeck, and off again at their stop.
 
-![Driving down Commonwealth Avenue in Back Bay](docs/screenshot-drive.jpg)
-
-| | |
-| --- | --- |
-| ![Harvard Bridge toward the Back Bay skyline](docs/screenshot-bridge.jpg) | ![The Zakim Bridge at sunset](docs/screenshot-zakim.jpg) |
-| ![Boylston Street at night](docs/screenshot-night.jpg) | ![Inside the Mass Pike tunnel under Back Bay](docs/screenshot-tunnel.jpg) |
-| ![Fenway Park and the Green Monster](docs/screenshot-fenway.jpg) | ![The State House's gold dome](docs/screenshot-statehouse.jpg) |
-| ![A Red Line train crossing the Longfellow Bridge](docs/screenshot-redline.jpg) | ![A jet on short final to runway 4R at Logan](docs/screenshot-logan.jpg) |
-| ![Driving a Green Line train into Park Street](docs/screenshot-subway.jpg) | ![Climbing Joy Street up Beacon Hill](docs/screenshot-hill.jpg) |
-| ![A rainy night on Commonwealth Avenue](docs/screenshot-rain.jpg) | ![Boylston Street under snow](docs/screenshot-snow.jpg) |
-| ![Racing an eight under the Weeks Footbridge in the Head of the Charles](docs/screenshot-hocr.jpg) | ![An icebreaker cutting a channel through the frozen Charles](docs/screenshot-icebreaker.jpg) |
-| ![Passengers boarding the icebreaker ferry at Magazine Beach](docs/screenshot-ferry.jpg) | ![Map with a GPS route to Fenway Park](docs/screenshot-map.jpg) |
-
 ## Play
 
 The game is a set of static files, so any local web server works. Browsers won't load the
@@ -47,8 +34,11 @@ cd RaceBoston
 
 Then open <http://localhost:8080> in Chrome, Edge, Firefox or Safari and pick a mode.
 
-`npm start` uses a small dependency-free server (`tools/serve.mjs`) that gzips the 15 MB map
-file. It's handy if you host the game on a network, but it isn't required.
+With Node 18+ installed, `run.sh` uses a small dependency-free server (`tools/serve.mjs`) that gzips
+the 15 MB map file, which helps if you host the game on a network; otherwise it falls back to Python.
+
+`Retro/` is a separate, slimmed-down version for old PCs running Netscape Navigator: see
+`Retro/README.txt`.
 
 ## Modes
 
@@ -192,7 +182,7 @@ painted on canvases in the browser:
     channel freezes grey after a minute and white again a couple of minutes later. Drive into one and
     you'll go through.
   - Once the snow stops, it all thaws over a few minutes.
-- **Boats** – the river's centre line (`tools/river.mjs`) is built at map-build time. The river is
+- **Boats** – the river's centre line is built when the map is. The river is
   rasterised, every cell gets its distance to the bank, and a path that keeps clear of both banks is found
   from Watertown down to the Museum of Science dam. Boats follow it.
   - Rowing crews (eights, fours and singles) keep to the right and spin to row back at the ends. Coach
@@ -210,7 +200,7 @@ painted on canvases in the browser:
   - Footbridges over the water, such as the Weeks Bridge, rise into arches on piers that boats pass
     between and cars can cross.
 - **Terrain** – heights come from the USGS 3D Elevation Program, through the AWS Terrain Tiles
-  (`tools/fetch-dem.mjs`), resampled to a 10 m grid. The highest point is 67 m on Parker Hill above
+  open dataset, resampled to a 10 m grid. The highest point is 67 m on Parker Hill above
   Mission Hill; the State House sits at 27 m on Beacon Hill and the Bunker Hill Monument at 24 m.
   Water is flat at its own level and the banks stay above it. Every map layer (parks, streets,
   sidewalks, crosswalks, runways, rail) is draped over the ground, and buildings stand on the lowest
@@ -221,7 +211,7 @@ painted on canvases in the browser:
   (double yellow lines, dashed white lane lines, edge lines) and stop cleanly at intersections.
   There are also sidewalks with curbs, mapped crosswalks and rail lines, including the Green Line tracks.
 - **Bridges, ramps and tunnels** – OSM only records vertical *order* (`bridge`, `tunnel`, `layer`), so
-  `tools/elevation.mjs` infers heights. Decks clear whatever they cross (6.5 m over roads, 3 m over water)
+  the map builder infers heights. Decks clear whatever they cross (6.5 m over roads, 3 m over water)
   and tunnels sit 7.5 m down per layer. Where a street crosses an at-grade highway, the highway drops into
   a trench, which is how the Pike runs through Back Bay. Everything in between is solved as a smooth ramp,
   with grades capped at about 11%. Bridges get decks, pillars and railings or jersey barriers. Tunnels get
@@ -298,57 +288,20 @@ src/                  game code (ES modules, no build step)
   vehicle.js          arcade car physics; collision.js: walls/trees/surfaces
   traffic.js          AI cars + traffic signals; roadgraph.js: graph + A*
   missions.js         free roam, races, taxi; hud.js: HUD, minimap, big map
-data/boston.json      processed map (generated)
-data/terrain.bin      10 m ground height grid (generated)
-tools/                data pipeline, dev server and automated tests
+data/boston.json      processed map, built from OpenStreetMap
+data/terrain.bin      10 m ground height grid, from USGS elevation data
+tools/serve.mjs       the small web server run.sh uses
 vendor/               three.js r186 (with its post-processing add-ons) and earcut (MIT / ISC)
+Retro/                a slimmed-down version for old PCs (Netscape Navigator)
 ```
-
-## Rebuilding or changing the map
-
-The playable area is set in `tools/config.mjs`. It reaches west to Harvard Square and the Eliot Bridge so
-the whole Head of the Charles course is detailed. To pull fresh OSM data or cover a different area:
-
-```sh
-npm install                 # only needed for the tools (Node 18+)
-npm run fetch-osm           # downloads raw OSM data from Overpass into tools/.cache/
-npm run fetch-dem           # downloads elevation tiles (AWS Terrain Tiles) into tools/.cache/dem/
-npm run build-map           # writes data/boston.json, data/terrain.bin and tools/.cache/preview.png
-```
-
-`fetch-osm` takes a few minutes because public Overpass servers are shared and rate-limited.
-`./run.sh --rebuild` runs all three.
-
-## Tests
-
-```sh
-npm test                          # boots the game in headless Chrome and checks it
-node tools/test-3d-roads.mjs      # autopilot drives the Pike, Big Dig, Zakim, bridges and harbor tunnels
-node tools/test-autodrive.mjs     # an autopilot drives every race end-to-end, with checkpoint splits
-node tools/test-trains.mjs        # an autopilot drives every train line, stopping at every platform
-```
-
-`npm test` checks loading, driving, braking and reversing, building collisions, splashing into the
-Charles and respawning, traffic, the coupe's 200 mph top speed and 0-60 time, the hills (and driving up
-Beacon Hill), driving the Harvard Bridge deck and the Pike tunnel, signs and landmarks, fly mode (flying
-through buildings and dropping the car), trains running and being solid, the subway's tunnels and
-stations, drag to look, train mode (driving the Red Line underground from Harvard to Central and stopping at the
-platform, AI trains in the tunnels), planes parked at Logan, landing and taking off, the plane settings,
-rain and snow (wet and snowy roads, less grip, the T key, a rainy night that still renders), boats (the On
-the Water menu and the course, a motorboat at speed, crews on the river, bouncing off the bank, rowing an
-eight, E to board and go ashore, the Head of the Charles from countdown to standings), the icebreaker (60
-mph and slow to accelerate, stopped by a low bridge), the Icebreaker Ferry (landings, passengers walking
-aboard, docking alongside, passengers getting off and paying), river ice (snow
-freezing the Charles, driving on it, icebreakers cutting channels, falling through one), finishing a
-race, a taxi fare, GPS routing (checkpoints on ordinary streets, never the wrong way up a ramp), bridge
-pillars clear of the roads below, every setting, night mode and frame rate. It saves screenshots to
-`tools/screenshots/`. The tests need Google Chrome installed; set `CHROME_PATH` if it isn't in the
-default location.
 
 ## Notes
 
 The game is plain JavaScript and WebGL (Three.js). WebAssembly wasn't needed: rendering runs on the
 GPU, and the car physics, collision queries and traffic AI take well under a millisecond per frame.
+
+The map data (`data/`) was built from OpenStreetMap and USGS elevation data with a set of local tools
+that aren't part of this repository, which holds just what the game needs to run.
 
 Road and tunnel heights are an educated guess from OSM's vertical-order tags. The ground is real, but
 the solver still works relative to it: a road keeps its height above the ground, so a highway on a
