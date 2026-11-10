@@ -294,6 +294,89 @@ export class AudioFX {
     this._shT = setTimeout(() => this.setShipHorn(false), seconds * 1000);
   }
 
+  // The aircraft you're flying: a jet's roar and whine with the engines'
+  // power, a propeller's buzz, the blimp's soft props. a: { kind, n1, speed,
+  // inside (cockpit), engines, big 0..1 } or null to silence it.
+  setAircraft(a) {
+    if (!this.ctx) return;
+    const ctx = this.ctx, t = ctx.currentTime;
+    if (!this.acGain) {
+      this.acGain = ctx.createGain(); this.acGain.gain.value = 0;
+      this.acFilter = ctx.createBiquadFilter(); this.acFilter.type = 'lowpass'; this.acFilter.frequency.value = 2000;
+      this.acGain.connect(this.acFilter).connect(this.master);
+      // Jet: low roar (core), a broad fan buzz and a turbine whine.
+      const n1 = ctx.createBufferSource(); n1.buffer = this.noiseBuf; n1.loop = true; n1.start(0, 0.3);
+      this.roarF = ctx.createBiquadFilter(); this.roarF.type = 'lowpass'; this.roarF.frequency.value = 220;
+      this.roarG = ctx.createGain(); this.roarG.gain.value = 0;
+      n1.connect(this.roarF).connect(this.roarG).connect(this.acGain);
+      const n2 = ctx.createBufferSource(); n2.buffer = this.noiseBuf; n2.loop = true; n2.start(0, 0.9);
+      this.fanF = ctx.createBiquadFilter(); this.fanF.type = 'bandpass'; this.fanF.frequency.value = 900; this.fanF.Q.value = 1.2;
+      this.fanG = ctx.createGain(); this.fanG.gain.value = 0;
+      n2.connect(this.fanF).connect(this.fanG).connect(this.acGain);
+      this.whine = ctx.createOscillator(); this.whine.type = 'sine'; this.whine.frequency.value = 1800; this.whine.start();
+      this.whineG = ctx.createGain(); this.whineG.gain.value = 0;
+      this.whine.connect(this.whineG).connect(this.acGain);
+      // Propeller: the blades' beat over a growling engine.
+      this.propO = ctx.createOscillator(); this.propO.type = 'sawtooth'; this.propO.frequency.value = 70; this.propO.start();
+      this.propS = ctx.createOscillator(); this.propS.type = 'square'; this.propS.frequency.value = 35; this.propS.start();
+      this.propF = ctx.createBiquadFilter(); this.propF.type = 'lowpass'; this.propF.frequency.value = 500; this.propF.Q.value = 1.5;
+      this.propG = ctx.createGain(); this.propG.gain.value = 0;
+      const ps = ctx.createGain(); ps.gain.value = 0.5;
+      this.propO.connect(this.propF); this.propS.connect(ps).connect(this.propF);
+      this.propF.connect(this.propG).connect(this.acGain);
+    }
+    if (!a) { this.acGain.gain.setTargetAtTime(0, t, 0.2); return; }
+    const n = clamp(Math.abs(a.n1), 0, 1), big = a.big ?? 0.5;
+    this.acGain.gain.setTargetAtTime(1, t, 0.2);
+    this.acFilter.frequency.setTargetAtTime(a.inside ? 900 : 6000, t, 0.2);
+    if (a.kind === 'jet') {
+      this.roarG.gain.setTargetAtTime((0.05 + n * n * 0.55) * (0.6 + 0.4 * big), t, 0.15);
+      this.roarF.frequency.setTargetAtTime(140 + n * 260, t, 0.2);
+      this.fanG.gain.setTargetAtTime(0.03 + n * 0.16, t, 0.15);
+      this.fanF.frequency.setTargetAtTime(600 + n * 1400 - big * 200, t, 0.3);
+      this.whineG.gain.setTargetAtTime(0.004 + n * 0.012, t, 0.3);
+      this.whine.frequency.setTargetAtTime(1500 + n * 2600 - big * 500, t, 0.4);
+      this.propG.gain.setTargetAtTime(0, t, 0.1);
+    } else {
+      // rpm from idle ~800 to ~2600 (blade passes: 2-3 a turn).
+      const rpm = (a.kind === 'blimp' ? 500 : 800) + n * (a.kind === 'blimp' ? 1500 : 1800);
+      const f = (rpm / 60) * (a.kind === 'blimp' ? 3 : 2);
+      this.propO.frequency.setTargetAtTime(f, t, 0.08);
+      this.propS.frequency.setTargetAtTime(f / 2, t, 0.08);
+      this.propF.frequency.setTargetAtTime(280 + n * 900, t, 0.1);
+      this.propG.gain.setTargetAtTime((a.kind === 'blimp' ? 0.03 : 0.06) + n * (a.kind === 'blimp' ? 0.05 : 0.11) * (a.engines > 1 ? 1.2 : 1), t, 0.1);
+      this.roarG.gain.setTargetAtTime(0.02 + n * 0.05, t, 0.2);
+      this.roarF.frequency.setTargetAtTime(160, t, 0.2);
+      this.fanG.gain.setTargetAtTime(0, t, 0.1);
+      this.whineG.gain.setTargetAtTime(0, t, 0.1);
+    }
+  }
+
+  // Cockpit warnings: the stall horn, the overspeed clacker (null: quiet).
+  setWarn(kind) {
+    if (!this.ctx) return;
+    const ctx = this.ctx, t = ctx.currentTime;
+    if (!this.wnG) {
+      this.wnG = ctx.createGain(); this.wnG.gain.value = 0;
+      this.wnO = ctx.createOscillator(); this.wnO.type = 'square'; this.wnO.frequency.value = 900; this.wnO.start();
+      const lfo = ctx.createOscillator(); lfo.type = 'square'; lfo.frequency.value = 6; lfo.start();
+      const lg = ctx.createGain(); lg.gain.value = 0.5;
+      this.wnAm = ctx.createGain(); this.wnAm.gain.value = 0.5;
+      lfo.connect(lg).connect(this.wnAm.gain);
+      this.wnO.connect(this.wnAm).connect(this.wnG).connect(this.master);
+    }
+    if (kind === this._warnKind) return;
+    this._warnKind = kind;
+    this.wnO.frequency.setValueAtTime(kind === 'overspeed' ? 420 : 950, t);
+    this.wnG.gain.setTargetAtTime(kind ? 0.035 : 0, t, 0.03);
+  }
+
+  // Tyres meeting the runway: a chirp and a thump (0..1).
+  touchdown(k = 0.5) {
+    this._burst(0.25 + k * 0.3, 1400, 0.06 + k * 0.1, 'bandpass', 1.5);
+    this._burst(0.35, 180, 0.15 + k * 0.4);
+  }
+
   checkpoint() { this.tone([880, 1320], 0.18, 'triangle', 0.2); }
   finish() { this.tone([523, 659, 784, 1047], 0.35, 'triangle', 0.22, 0.12); }
   beep(final) { this.tone([final ? 1046 : 523], final ? 0.5 : 0.22, 'square', 0.08); }

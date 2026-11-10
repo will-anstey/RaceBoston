@@ -11,6 +11,10 @@ import { RESCUES } from './rescue.js';
 import { SEA_RACES, ordinalOf } from './searace.js';
 import { TOW_JOBS } from './tow.js';
 import { BOAT_TYPES, BOAT_ORDER } from './boats.js';
+import { AIRCRAFT, AIRCRAFT_ORDER } from './aircraft.js';
+import { AIRPORT_DEFS } from './airports.js';
+import { flightOffers } from './airline.js';
+import { REGION_INFO, ISLANDS } from './regions.js';
 
 export const CARS = [
   { id: 'coupe', model: 'coupe', handling: 'coupe', name: 'Sports Coupe', color: 0xc8102e, desc: '200 mph flat out, 0-60 in 3.3 s. Loves the Pike.' },
@@ -30,6 +34,9 @@ const SETTINGS = [
   { key: 'sound', label: 'Sound', values: [true, false], names: ['On', 'Off'] },
   { key: 'arrow', label: 'GPS arrow', values: [true, false], names: ['On', 'Off'] },
   { key: 'labels', label: 'Landmark labels', values: [true, false], names: ['On', 'Off'] },
+  { key: 'flightAssist', label: 'Flight controls', values: [true, false], names: ['Assisted (fly-by-wire)', 'Direct (you can stall)'] },
+  { key: 'invertPitch', label: 'Pitch keys', values: [false, true], names: ['↑ nose down (like a stick)', '↑ nose up'] },
+  { key: 'voice', label: 'Tower voice', values: [true, false], names: ['On', 'Off'] },
 ];
 
 export class Menu {
@@ -112,6 +119,8 @@ export class Menu {
     const g = this.g;
     switch (act) {
       case 'free': g.begin('free'); break;
+      case 'roam': if (arg) g.begin('free', { region: arg }); else this.show('roam'); break;
+      case 'islandboat': { const [isl, k, type] = arg.split(':'); g.beginBoat({ island: isl, harbor: +k, type: type || 'motor' }); break; }
       case 'fly': g.beginFly(); break;
       case 'lines': this.show('lines'); break;
       case 'train': g.beginTrain(+arg); break;
@@ -123,6 +132,22 @@ export class Menu {
       case 'searace': g.beginBoat({ searace: arg }); break;
       case 'tow': g.beginBoat({ tow: arg }); break;
       case 'races': this.show('races'); break;
+      case 'sky': this.show('sky'); break;
+      case 'airline': this.show('airline'); break;
+      case 'skyfrom': {
+        const list = this._skyAirports(), i = list.indexOf(this.skyFrom || 'BOS');
+        this.skyFrom = list[(i + 1) % list.length];
+        const sel = this.sel;
+        this.show('sky', null, false);
+        this._select(sel);
+        break;
+      }
+      case 'freeflight': g.beginFlight({ type: arg, airport: this.skyFrom || 'BOS', at: arg === 'blimp' ? 'mast' : 'runway' }); break;
+      case 'flight': {
+        const o = flightOffers(g.flightMode.unlocked).find((f) => f.id === arg);
+        if (o && !o.locked) g.beginFlight({ offer: o });
+        break;
+      }
       case 'race': g.begin('race', arg); break;
       case 'taxi': g.begin('taxi'); break;
       case 'garage': this.show('garage'); break;
@@ -159,10 +184,11 @@ export class Menu {
       <div class="brand"><div class="brand-top">RACE</div><div class="brand-bottom">BOSTON</div></div>
       <p class="tagline">Drive the real streets of Boston, built from OpenStreetMap: ${g.map.buildings.length.toLocaleString()} buildings, ${g.map.roads.length.toLocaleString()} roads, the Charles, the harbor and every one-way street.</p>
       <div class="menu-list">
-        <button class="menu-btn primary" data-act="free"><span>Free Roam<span class="desc">Explore and discover ${g.map.landmarks.length} landmarks (${g.missions.discovered.size} found)</span></span><span class="meta">&#9654;</span></button>
+        <button class="menu-btn primary" data-act="${g.flightMode.unlocked.size ? 'roam' : 'free'}"><span>Free Roam<span class="desc">${g.flightMode.unlocked.size ? 'Boston, Martha&rsquo;s Vineyard or Nantucket' : `Explore and discover ${g.map.landmarks.length} landmarks (${g.missions.discovered.size} found)`}</span></span><span class="meta">&#9656;</span></button>
         <button class="menu-btn" data-act="fly"><span>Fly Around<span class="desc">Ghost camera: fly anywhere, through anything</span></span><span class="meta">&#9654;</span></button>
         <button class="menu-btn" data-act="lines"><span>Drive a Train<span class="desc">Red, Orange, Blue and Green Lines and the commuter rail, through the subway</span></span><span class="meta">&#9656;</span></button>
         <button class="menu-btn" data-act="water"><span>On the Water<span class="desc">Motorboats, rowing, tugs and ferries &middot; the Head of the Charles and races at sea &middot; the icebreaker&rsquo;s ferry, rescues and tows</span></span><span class="meta">&#9656;</span></button>
+        <button class="menu-btn" data-act="sky"><span>Take to the Skies<span class="desc">Fly a Cessna, airliners up to the A380 and the Boodyear Glimp &middot; fly out to Martha&rsquo;s Vineyard and Nantucket</span></span><span class="meta">&#9656;</span></button>
         <button class="menu-btn" data-act="races"><span>Races<span class="desc">${RACES.length} checkpoint races &middot; ${golds} gold</span></span><span class="meta">&#9656;</span></button>
         <button class="menu-btn" data-act="taxi"><span>Taxi Shift<span class="desc">Best shift $${g.missions.taxiBest.toFixed(2)}</span></span><span class="meta">&#9656;</span></button>
         <button class="menu-btn" data-act="garage"><span>Garage<span class="desc">${esc(car.name)}</span></span><span class="meta">&#9656;</span></button>
@@ -173,12 +199,21 @@ export class Menu {
   }
 
   _races() {
-    const m = this.g.missions, metric = this.g.settings.metric;
+    const g = this.g, m = g.missions, metric = g.settings.metric, u = g.flightMode.unlocked;
     const rows = RACES.map((r) => {
-      const info = m.raceInfo(r);
       const best = m.best[r.id];
+      // Island races: locked until you've landed there; their times show once you've raced them.
+      if (r.region && r.region !== g.region.id) {
+        const locked = !u.has(r.region), where = REGION_INFO[r.region].name;
+        return `<button class="menu-btn"${locked ? ' disabled style="opacity:0.5"' : ''} data-act="race" data-arg="${r.id}"><span>${esc(r.name)}<span class="desc">${esc(where)} &middot; ${esc(r.blurb)}${locked ? ' &middot; fly there and land to unlock' : ''}</span></span>
+          <span class="meta">${locked ? '&#128274;' : best ? formatTime(best) : '--:--'}</span></button>`;
+      }
+      if (!r.region && !g.region.boston) {
+        return `<button class="menu-btn" data-act="race" data-arg="${r.id}"><span>${esc(r.name)}<span class="desc">Boston &middot; ${esc(r.blurb)}</span></span><span class="meta">${best ? formatTime(best) : '--:--'}</span></button>`;
+      }
+      const info = m.raceInfo(r);
       const medal = best ? m.medalFor(r, best) : null;
-      return `<button class="menu-btn" data-act="race" data-arg="${r.id}"><span>${esc(r.name)}<span class="desc">${esc(r.blurb)} &middot; ${formatDistance(info.length, metric)} &middot; gold ${formatTime(info.gold)}</span></span>
+      return `<button class="menu-btn" data-act="race" data-arg="${r.id}"><span>${esc(r.name)}<span class="desc">${r.region ? esc(REGION_INFO[r.region].name) + ' &middot; ' : ''}${esc(r.blurb)} &middot; ${formatDistance(info.length, metric)} &middot; gold ${formatTime(info.gold)}</span></span>
         <span class="meta">${best ? formatTime(best) : '--:--'}<span class="medal ${medal || 'none'}"></span></span></button>`;
     }).join('');
     return `<div class="menu-title">Races</div><div class="menu-list">${rows}<button class="menu-btn back" data-act="back"><span>&larr; Back</span></button></div>`;
@@ -197,7 +232,7 @@ export class Menu {
   }
 
   _water() {
-    const g = this.g, metric = g.settings.metric, bm = g.boatMode;
+    const g = this.g, metric = g.settings.metric, bm = g.boatMode, u = g.flightMode.unlocked;
     if (!bm.available) return `<div class="menu-title">On the Water</div><p class="tagline">This map has no river.</p><div class="menu-list"><button class="menu-btn back" data-act="back"><span>&larr; Back</span></button></div>`;
     const len = formatDistance(bm.course.length, metric);
     const races = REGATTAS.map((r) => {
@@ -222,16 +257,71 @@ export class Menu {
     const sb = loadJSON('rb.seaRace', {});
     const seaRaces = SEA_RACES.map((r) => {
       const b = sb[r.id], medal = b ? (b.place === 1 ? 'gold' : b.place === 2 ? 'silver' : b.place === 3 ? 'bronze' : 'none') : 'none';
-      return `<button class="menu-btn" data-act="searace" data-arg="${r.id}"><span>Sea Race: ${esc(r.name)}<span class="desc">${esc(r.blurb)} &middot; ${BOAT_TYPES[r.boat].name}s, ${r.field} racing</span></span>
+      if (r.region && !u.has(r.region)) return `<button class="menu-btn" disabled style="opacity:0.5"><span>Sea Race: ${esc(r.name)}<span class="desc">${esc(REGION_INFO[r.region].name)} &middot; fly there and land to unlock</span></span><span class="meta">&#128274;</span></button>`;
+      return `<button class="menu-btn" data-act="searace" data-arg="${r.id}"><span>Sea Race: ${esc(r.name)}<span class="desc">${r.region ? esc(REGION_INFO[r.region].name) + ' &middot; ' : ''}${esc(r.blurb)} &middot; ${BOAT_TYPES[r.boat].name}s, ${r.field} racing</span></span>
         <span class="meta">${b ? `${formatTime(b.time)} &middot; ${ordinalOf(b.place)}` : '--:--'}<span class="medal ${medal}"></span></span></button>`;
     }).join('');
     const tb = loadJSON('rb.towBest', {});
     const tows = TOW_JOBS.map((r) => `<button class="menu-btn" data-act="tow" data-arg="${r.id}"><span>Icebreaker Tow: the ${esc(r.ship)}<span class="desc">${esc(r.blurb)} &middot; $${r.fee.toLocaleString()} &middot; ${formatTime(r.time).replace(/\.\d+$/, '')} on the clock</span></span>
       <span class="meta">${tb[r.id] != null ? `Best $${tb[r.id].toLocaleString()}` : '&#9654;'}</span></button>`).join('');
+    const islands = ISLANDS.filter((id) => u.has(id)).map((id) => {
+      const info = REGION_INFO[id];
+      return info.harbors.map(([name], k) => `<button class="menu-btn" data-act="islandboat" data-arg="${id}:${k}:${k === 0 ? 'motor' : k === 1 ? 'ferryboat' : 'trawler'}"><span>${esc(info.name)}: ${esc(name)}<span class="desc">${k === 0 ? 'Motorboat' : k === 1 ? 'Harbor ferry' : 'Fishing boat'} out of ${esc(name)}</span></span><span class="meta">&#9654;</span></button>`).join('');
+    }).join('');
     const ice = g.ice.frozen ? 'The river is frozen: boats stay in the icebreakers&rsquo; channels, the race course is cleared. ' : '';
     return `<div class="menu-title">On the Water</div>
       <p class="tagline">${ice}In Free Roam, stop by the river or the harbor and press E to take your last boat out; E near the bank goes ashore. Frozen in? Q radios for an icebreaker.</p>
-      <div class="menu-list">${races}${seaRaces}${ferries}${rescues}${tows}${boats}<button class="menu-btn back" data-act="back"><span>&larr; Back</span></button></div>`;
+      <div class="menu-list">${races}${seaRaces}${ferries}${rescues}${tows}${boats}${islands}<button class="menu-btn back" data-act="back"><span>&larr; Back</span></button></div>`;
+  }
+
+  // Where to roam: Boston, and the islands you've landed on.
+  _roam() {
+    const g = this.g, u = g.flightMode.unlocked;
+    const rows = ['boston', ...ISLANDS].map((id) => {
+      const info = REGION_INFO[id], locked = id !== 'boston' && !u.has(id);
+      const desc = id === 'boston' ? `${g.regions.get('boston').map.landmarks.length} landmarks, the T, Logan and the harbor` : id === 'vineyard' ? 'Vineyard Haven, Oak Bluffs, Edgartown and up-island to the Gay Head cliffs' : 'Nantucket town, the moors, Sconset and Madaket';
+      return `<button class="menu-btn${id === g.region.id ? ' primary' : ''}"${locked ? ' disabled style="opacity:0.5"' : ''} data-act="roam" data-arg="${id}"><span>${esc(info.name)}<span class="desc">${desc}${locked ? ' &middot; fly there and land to unlock' : ''}</span></span><span class="meta">${locked ? '&#128274;' : id === g.region.id ? 'Here' : '&#9654;'}</span></button>`;
+    }).join('');
+    return `<div class="menu-title">Free Roam</div><p class="tagline">Drive anywhere you've been. Land on an island to unlock it.</p>
+      <div class="menu-list">${rows}<button class="menu-btn back" data-act="back"><span>&larr; Back</span></button></div>`;
+  }
+
+  // Airports you can start a flight from: Logan, and the islands you've flown to.
+  _skyAirports() {
+    const u = this.g.flightMode.unlocked;
+    return Object.values(AIRPORT_DEFS).filter((a) => a.region === 'boston' || u.has(a.region)).map((a) => a.code);
+  }
+
+  _sky() {
+    const g = this.g, from = AIRPORT_DEFS[this.skyFrom || 'BOS'] || AIRPORT_DEFS.BOS, u = g.flightMode.unlocked;
+    const isl = ['vineyard', 'nantucket'].map((r) => `${r === 'vineyard' ? "Martha's Vineyard" : 'Nantucket'} ${u.has(r) ? '&#10003;' : '(land there to unlock)'}`).join(' &middot; ');
+    const types = AIRCRAFT_ORDER.map((id) => {
+      const T = AIRCRAFT[id];
+      return `<button class="menu-btn${id === 'c172' ? ' primary' : ''}" data-act="freeflight" data-arg="${id}"><span>${esc(T.name)}<span class="desc">${esc(T.desc)}</span></span><span class="meta">${id === 'c172' ? 'Solo' : 'Free flight'} &#9654;</span></button>`;
+    }).join('');
+    const B = AIRCRAFT.blimp;
+    return `<div class="menu-title">Take to the Skies</div>
+      <p class="tagline">Take off from ${esc(from.name)} and fly anywhere. Islands: ${isl}.</p>
+      <div class="menu-list">
+        <button class="menu-btn" data-act="skyfrom"><span>Start from</span><span class="meta">${esc(from.short)} &#9656;</span></button>
+        <button class="menu-btn" data-act="airline"><span>Airline Flights<span class="desc">Taxi to the gate, board your passengers, push back, take off, land and park at the other end</span></span><span class="meta">&#9656;</span></button>
+        ${types}
+        <button class="menu-btn" data-act="freeflight" data-arg="blimp"><span>${esc(B.name)}<span class="desc">${esc(B.desc)}</span></span><span class="meta">Cast off &#9654;</span></button>
+        <button class="menu-btn back" data-act="back"><span>&larr; Back</span></button>
+      </div>`;
+  }
+
+  _airline() {
+    const g = this.g, best = loadJSON('rb.flightBest', {});
+    const rows = flightOffers(g.flightMode.unlocked).map((o) => {
+      const T = AIRCRAFT[o.type], b = best[o.id];
+      const medal = b ? (b.score >= 90 ? 'gold' : b.score >= 75 ? 'silver' : b.score >= 55 ? 'bronze' : 'none') : 'none';
+      return `<button class="menu-btn"${o.locked ? ' disabled style="opacity:0.5"' : ''} data-act="flight" data-arg="${o.id}"><span>${esc(o.name)}<span class="desc">${esc(T.airline || '')} ${esc(T.short)} &middot; ${o.from} &rarr; ${o.to}${o.locked ? ' &middot; fly to the island first to unlock' : ''}</span></span>
+        <span class="meta">${o.locked ? '&#128274;' : b ? `${b.score} pts` : '&#9654;'}<span class="medal ${medal}"></span></span></button>`;
+    }).join('');
+    return `<div class="menu-title">Airline Flights</div>
+      <p class="tagline">Start on a remote stand, taxi to your gate (follow the green lights), board, push back, taxi to the runway and hold short for your clearance. J skips ahead to the approach; [ and ] speed up time in the cruise.</p>
+      <div class="menu-list">${rows}<button class="menu-btn back" data-act="back"><span>&larr; Back</span></button></div>`;
   }
 
   _garage() {
@@ -265,6 +355,9 @@ export class Menu {
       ['Icebreaker Tow', 'Break her free down both sides, stop with your stern at her bow to pass the line, take up the slack gently'],
       ['Tug, ferry, trawler', 'W ahead, S astern, A D helm (thrusters turn them when stopped), H horn; they go out from the harbor'],
       ['Q', 'In a boat, frozen in: radio for an icebreaker to break you out (a canoe, rowboat or scull she lifts aboard and lands; E skips ahead)'],
+      ['Flying', 'W/S throttle, ↑↓ pitch (↑ nose down), A D roll (steer on the ground), Q E rudder, Space brakes, S at idle on the ground: reverse thrust'],
+      ['Flying', 'Z X flaps, G gear, B speed brakes, C camera (chase, far, cockpit, tower), [ ] time compression, J skip to the approach, Enter get out (stopped)'],
+      ['Glimp', 'W/S throttle (S reverses), ↑↓ climb / descend, A D or Q E rudder, Z X ballast'],
       ['K', 'Mute'], ['F', 'Fullscreen'], ['Esc / P', 'Pause'],
       ['Gamepad', 'RT gas, LT brake, A handbrake, B boost, X reset, Y camera, Start pause'],
     ].map(([k, v]) => `<b>${k}</b><span>${v}</span>`).join('');
@@ -274,7 +367,8 @@ export class Menu {
 
   _pause() {
     const g = this.g;
-    const restart = g.trainMode.active ? '<button class="menu-btn" data-act="restart"><span>Restart line</span></button>'
+    const restart = g.flightMode.active ? '<button class="menu-btn" data-act="restart"><span>Restart flight</span></button>'
+      : g.trainMode.active ? '<button class="menu-btn" data-act="restart"><span>Restart line</span></button>'
       : g.boatMode.active && g.boatMode.race ? '<button class="menu-btn" data-act="restart"><span>Restart race</span></button>'
       : g.boatMode.active && g.boatMode.ferry ? '<button class="menu-btn" data-act="restart"><span>Restart shift</span></button>'
       : g.boatMode.active && g.boatMode.rescue ? '<button class="menu-btn" data-act="restart"><span>Restart rescue</span></button>'
@@ -283,10 +377,11 @@ export class Menu {
       : g.missions.mode !== 'free' && !g.boatMode.active ? `<button class="menu-btn" data-act="restart"><span>Restart ${g.missions.mode === 'taxi' ? 'shift' : 'race'}</span></button>` : '';
     return `<div class="menu-title">Paused</div><div class="menu-list">
       <button class="menu-btn primary" data-act="resume"><span>Resume</span></button>${restart}
-      <button class="menu-btn" data-act="free"><span>Free Roam</span></button>
+      <button class="menu-btn" data-act="${g.flightMode.unlocked.size ? 'roam' : 'free'}"><span>Free Roam</span>${g.flightMode.unlocked.size ? '<span class="meta">&#9656;</span>' : ''}</button>
       <button class="menu-btn" data-act="fly"><span>Fly Around</span></button>
       <button class="menu-btn" data-act="lines"><span>Drive a Train</span><span class="meta">&#9656;</span></button>
       <button class="menu-btn" data-act="water"><span>On the Water</span><span class="meta">&#9656;</span></button>
+      <button class="menu-btn" data-act="sky"><span>Take to the Skies</span><span class="meta">&#9656;</span></button>
       <button class="menu-btn" data-act="races"><span>Races</span><span class="meta">&#9656;</span></button>
       <button class="menu-btn" data-act="taxi"><span>Taxi Shift</span></button>
       <button class="menu-btn" data-act="garage"><span>Garage</span><span class="meta">&#9656;</span></button>
@@ -296,6 +391,28 @@ export class Menu {
   }
 
   _results(r) {
+    if (r.flight) {
+      if (r.crashed) {
+        return `<div class="menu-title">${esc(r.title)}</div>
+          <div class="brand-top" style="font-size:56px;font-weight:900;font-style:italic;color:#ff6b6b">Crashed</div>
+          <p class="tagline">${esc(r.reason || '')}${r.type ? ' &middot; ' + esc(r.type) : ''}</p>
+          <div class="menu-list"><button class="menu-btn primary" data-act="retry"><span>Try again</span></button>
+          <button class="menu-btn" data-act="sky"><span>Take to the Skies</span><span class="meta">&#9656;</span></button>
+          <button class="menu-btn" data-act="free"><span>Free Roam</span></button><button class="menu-btn back" data-act="home"><span>Main menu</span></button></div>`;
+      }
+      const medalName = r.grade ? r.grade[0].toUpperCase() + r.grade.slice(1) + ' medal' : 'No medal';
+      const rows = [
+        ['Landing', r.landing ? `${r.landing.name} &middot; ${r.landing.fpm} fpm` : '-'], ['Comfort', `${r.comfort}/100`], ['Taxiing', `${r.taxi}/100`], ['Parking', `${r.park}/100`],
+        ['Passengers', `${r.pax}`], ['Route', `${esc(r.from)} &rarr; ${esc(r.to)}${r.diverted ? ' (diverted)' : ''}`], ['Block time', formatTime(r.time).replace(/\.\d+$/, '')],
+      ].map(([k, v]) => `<b>${k}</b><span>${v}</span>`).join('');
+      return `<div class="menu-title">${esc(r.title)}</div>
+        <div class="brand-top" style="font-size:64px;font-weight:900;font-style:italic;color:#7ee081">$${r.pay.toLocaleString()}</div>
+        <p class="tagline"><span class="medal ${r.grade || 'none'}"></span> ${r.score} points &middot; ${medalName}${r.record ? ' &middot; <b style="color:#f4c542">New best!</b>' : r.prev != null ? ` &middot; Best ${r.prev}` : ''}</p>
+        <div class="controls-grid">${rows}</div>
+        <div class="menu-list"><button class="menu-btn primary" data-act="retry"><span>Fly it again</span></button>
+        <button class="menu-btn" data-act="airline"><span>Airline Flights</span><span class="meta">&#9656;</span></button>
+        <button class="menu-btn" data-act="free"><span>Free Roam</span></button><button class="menu-btn back" data-act="home"><span>Main menu</span></button></div>`;
+    }
     if (r.rescue) {
       const medalName = r.medal ? r.medal[0].toUpperCase() + r.medal.slice(1) + ' medal' : 'No medal';
       const head = r.won ? `${formatTime(r.left).replace(/\.\d+$/, '')}<span style="font-size:24px;opacity:0.6"> to spare</span>` : `${r.saved}<span style="font-size:24px;opacity:0.6"> / ${r.total}</span>`;

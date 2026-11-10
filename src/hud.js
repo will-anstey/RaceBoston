@@ -85,7 +85,14 @@ export class HUD {
     this._set('score', this.scoreEl, 'innerHTML', html);
   }
 
-  fadeHint() { setTimeout(() => (this.hintEl.style.opacity = '0'), 12000); }
+  // text: the keys for what you're doing now (flying has its own).
+  fadeHint(text = null) {
+    if (!this._hint0) this._hint0 = this.hintEl.innerHTML;
+    this.hintEl.innerHTML = text || this._hint0;
+    this.hintEl.style.opacity = '';
+    clearTimeout(this._hintT);
+    this._hintT = setTimeout(() => (this.hintEl.style.opacity = '0'), 12000);
+  }
 }
 
 export function esc(s) {
@@ -105,7 +112,7 @@ export class MapArt {
     this.map = map;
     this.graph = graph;
     const b = (this.b = map.meta.play);
-    this.mpp = 2.5;
+    this.mpp = map.coarse > 1 ? 10 : 2.5;
     this.W = Math.ceil((b.maxX - b.minX) / this.mpp);
     this.H = Math.ceil((b.maxZ - b.minZ) / this.mpp);
     this.base = document.createElement('canvas');
@@ -245,9 +252,8 @@ export class Minimap {
 
   draw(px, pz, heading, speed, overlays) {
     const ctx = this.ctx, size = this.canvas.width;
-    const { art } = this;
-    const b = art.b, mpp = art.mpp;
-    const targetR = 150 + clamp(speed, 0, 50) * 3.2;
+    const arts = this.arts || [this.art];
+    const targetR = this.zoomOverride || 150 + clamp(speed, 0, 50) * 3.2;
     this.radius += (targetR - this.radius) * 0.05;
     const R = this.radius;
     const s = size / (2 * R);
@@ -258,15 +264,30 @@ export class Minimap {
     ctx.rotate(-heading);
     ctx.scale(s, s);
     ctx.translate(-px, -pz);
-    // Base image (clamped source rect).
+    // The coast beyond the detailed maps (flying), then every region in view.
     const E = R * 1.5;
-    let x0 = px - E, z0 = pz - E, x1 = px + E, z1 = pz + E;
-    x0 = Math.max(x0, b.minX); z0 = Math.max(z0, b.minZ); x1 = Math.min(x1, b.maxX); z1 = Math.min(z1, b.maxZ);
-    if (x1 > x0 && z1 > z0) {
-      ctx.imageSmoothingEnabled = true;
-      ctx.drawImage(art.base, (x0 - b.minX) / mpp, (z0 - b.minZ) / mpp, (x1 - x0) / mpp, (z1 - z0) / mpp, x0, z0, x1 - x0, z1 - z0);
+    if (this.backdrop && R > 1200) { const d = this.backdrop; ctx.imageSmoothingEnabled = true; ctx.drawImage(d.canvas, d.minX, d.minZ, d.maxX - d.minX, d.maxZ - d.minZ); }
+    for (const art of arts) {
+      const b = art.b, mpp = art.mpp;
+      let x0 = px - E, z0 = pz - E, x1 = px + E, z1 = pz + E;
+      x0 = Math.max(x0, b.minX); z0 = Math.max(z0, b.minZ); x1 = Math.min(x1, b.maxX); z1 = Math.min(z1, b.maxZ);
+      if (x1 > x0 && z1 > z0) {
+        ctx.imageSmoothingEnabled = true;
+        ctx.drawImage(art.base, (x0 - b.minX) / mpp, (z0 - b.minZ) / mpp, (x1 - x0) / mpp, (z1 - z0) / mpp, x0, z0, x1 - x0, z1 - z0);
+      }
     }
-    // Crisp vector roads on top.
+    // Crisp vector roads on top (where they'd be wider than a pixel or so).
+    if (R < 2600) for (const art of arts) {
+      const b = art.b;
+      if (px + E < b.minX || px - E > b.maxX || pz + E < b.minZ || pz - E > b.maxZ) continue;
+      this._roads(ctx, art, px, pz, E, s);
+    }
+    drawOverlays(ctx, overlays, s, heading);
+    ctx.restore();
+    this._rim(ctx, size, px, pz, heading, s, overlays);
+  }
+
+  _roads(ctx, art, px, pz, E, s) {
     const g = art.graph, sg = g.segGrid, segs = sg.segs, roads = art.map.roads;
     const n = sg.query(px, pz, E);
     ctx.lineCap = 'round';
@@ -301,8 +322,9 @@ export class Minimap {
       ctx.lineWidth = Math.max(w, 2.2 / s);
       ctx.stroke();
     }
-    drawOverlays(ctx, overlays, s, heading);
-    ctx.restore();
+  }
+
+  _rim(ctx, size, px, pz, heading, s, overlays) {
     // Off-screen target arrows on the rim.
     for (const m of overlays.markers || []) {
       if (!m.edge) continue;
@@ -357,7 +379,7 @@ export class BigMap {
       e.preventDefault();
       const k = this.dpr || 1;
       const [wx, wz] = this.toWorld(e.offsetX * k, e.offsetY * k);
-      this.zoom = clamp(this.zoom * (e.deltaY < 0 ? 1.18 : 1 / 1.18), 0.6, 12);
+      this.zoom = clamp(this.zoom * (e.deltaY < 0 ? 1.18 : 1 / 1.18), 0.6, this.maxZoom);
       const [nx, nz] = this.toWorld(e.offsetX * k, e.offsetY * k);
       this.cx += wx - nx; this.cz += wz - nz;
     }, { passive: false });
@@ -388,11 +410,22 @@ export class BigMap {
     canvas.addEventListener('contextmenu', (e) => e.preventDefault());
   }
 
+  // The area the map can show: Boston's, or (with the islands in) everything.
+  get extent() {
+    if (!this.arts || this.arts.length < 2) return this.art.b;
+    let minX = Infinity, minZ = Infinity, maxX = -Infinity, maxZ = -Infinity;
+    for (const a of this.arts) { minX = Math.min(minX, a.b.minX); minZ = Math.min(minZ, a.b.minZ); maxX = Math.max(maxX, a.b.maxX); maxZ = Math.max(maxZ, a.b.maxZ); }
+    return { minX, minZ, maxX, maxZ };
+  }
+
   scale() {
-    const b = this.art.b;
+    const b = this.extent;
     const fit = Math.min(this.canvas.width / (b.maxX - b.minX), this.canvas.height / (b.maxZ - b.minZ));
     return fit * this.zoom;
   }
+
+  // Zoom limits: from the whole extent down to about a kilometre across.
+  get maxZoom() { const b = this.extent; return Math.max(12, (b.maxX - b.minX) / 1100); }
   toWorld(sx, sy) {
     const s = this.scale();
     return [this.cx + (sx - this.canvas.width / 2) / s, this.cz + (sy - this.canvas.height / 2) / s];
@@ -408,7 +441,8 @@ export class BigMap {
       this.canvas.style.width = '100%';
       this.canvas.style.height = '100%';
       this.dpr = dpr;
-      this.zoom = 2.2;
+      const b = this.extent;
+      this.zoom = clamp(((b.maxX - b.minX) / (this.wide ? 60000 : 6500)) * (2.2 * 6500 / 14000), 0.6, this.maxZoom);
       this.cx = px; this.cz = pz;
     }
   }
@@ -422,7 +456,8 @@ export class BigMap {
     ctx.fillRect(0, 0, W, H);
     ctx.setTransform(s, 0, 0, s, W / 2 - this.cx * s, H / 2 - this.cz * s);
     ctx.imageSmoothingEnabled = true;
-    ctx.drawImage(art.base, b.minX, b.minZ, b.maxX - b.minX, b.maxZ - b.minZ);
+    if (this.backdrop) { const d = this.backdrop; ctx.drawImage(d.canvas, d.minX, d.minZ, d.maxX - d.minX, d.maxZ - d.minZ); }
+    for (const a of this.arts || [art]) ctx.drawImage(a.base, a.b.minX, a.b.minZ, a.b.maxX - a.b.minX, a.b.maxZ - a.b.minZ);
     drawOverlays(ctx, overlays, s, 0);
     // landmarks
     ctx.font = `600 ${12 / s * (this.dpr || 1)}px Inter, Segoe UI, sans-serif`;

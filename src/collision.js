@@ -20,7 +20,8 @@ export class CollisionWorld {
     const st = world.structures || { walls: [], surfaces: [], pillars: [], footprints: [] };
     this.bounds = b;
     this.terrain = map.terrain;
-    this.walls = new SegmentGrid(b, 10);
+    const c = map.coarse || 1;
+    this.walls = new SegmentGrid(b, 10 * c);
     for (const bd of map.buildings) {
       if (!bd.solid) continue;
       for (const r of bd.rings) {
@@ -34,24 +35,24 @@ export class CollisionWorld {
     for (const [ax, az, bx, bz, y0, y1, kind] of st.walls) this.walls.add(ax, az, bx, bz, kind, 0, y0, y1);
     this.walls.build();
     // Subway tunnel walls: only for cameras (no car gets into a rail tunnel).
-    this.railWalls = new SegmentGrid(b, 10);
+    this.railWalls = new SegmentGrid(b, 10 * c);
     for (const [ax, az, bx, bz, y0, y1, kind] of (world.rail && world.rail.tunnelWalls) || []) this.railWalls.add(ax, az, bx, bz, kind, 0, y0, y1);
     this.railWalls.build();
 
-    this.trees = new PointGrid(b, 10);
+    this.trees = new PointGrid(b, 10 * c);
     for (let i = 0; i < map.trees.length; i += 2) this.trees.add(map.trees[i], map.trees[i + 1], 0.32);
     for (const [x, z, r] of st.pillars) this.trees.add(x, z, r);
     this.trees.build();
 
     // Elevated / sunken road surfaces: [ax, az, bx, bz, ya, yb, halfWidth].
-    this.decks = new SegmentGrid(b, 16);
+    this.decks = new SegmentGrid(b, 16 * c);
     const hw = [], lw = [];
     for (const [ax, az, bx, bz, ya, yb, w, lane] of st.surfaces) { this.decks.add(ax, az, bx, bz, 0, 0, ya, yb); hw.push(w); lw.push(lane ?? w); }
     this.decks.build();
     this.deckHW = Float32Array.from(hw);
     this.deckLaneHW = Float32Array.from(lw);
 
-    const s = (this.surface = new SurfaceMap(b, 2));
+    const s = (this.surface = new SurfaceMap(b, 2 * c));
     s.fill(SURF.WATER);
     for (const p of map.land) s.polygon(p, SURF.WATER, true);
     for (const p of map.water) s.polygon(p, SURF.WATER);

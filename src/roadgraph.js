@@ -74,7 +74,7 @@ export class RoadGraph {
 
     const bounds = map.meta.play;
     // Segment index for "which road am I on" queries.
-    this.segGrid = new SegmentGrid(bounds, 24);
+    this.segGrid = new SegmentGrid(bounds, 24 * (map.coarse || 1));
     for (const r of map.roads) {
       const ns = r.nodes;
       for (let i = 0; i + 1 < ns.length; i++) {
@@ -85,7 +85,7 @@ export class RoadGraph {
     this.segGrid.build();
 
     // Main-network nodes for snapping (exclude service roads where possible).
-    this.nodeGrid = new PointGrid(bounds, 40);
+    this.nodeGrid = new PointGrid(bounds, 40 * (map.coarse || 1));
     this.nodeClass = new Uint8Array(N).fill(255);
     for (const r of map.roads) for (const n of r.nodes) this.nodeClass[n] = Math.min(this.nodeClass[n], r.cls);
     for (let i = 0; i < N; i++) {

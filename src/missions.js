@@ -34,6 +34,23 @@ export const RACES = [
     id: 'logan', name: 'Logan Express', blurb: 'South Station to Logan through the Ted Williams Tunnel, home under the harbor.',
     stops: ['South Station', 'Tea Party Museum', 'Logan Airport', 'Maverick Square', 'Piers Park', 'Old North Church'],
   },
+  // The islands (unlocked by landing there).
+  {
+    id: 'downisland', region: 'vineyard', name: 'Down-Island Dash', blurb: "Vineyard Haven to Edgartown by Oak Bluffs and the Jaws bridge.",
+    stops: ['Owen Park', 'Ocean Park', 'Flying Horses Carousel', 'Jaws Bridge', 'Edgartown Harbor Light'],
+  },
+  {
+    id: 'upisland', region: 'vineyard', name: 'Up-Island Run', blurb: 'The airport to the Gay Head cliffs by way of Menemsha.',
+    stops: ["Martha's Vineyard Airport", 'Polly Hill Arboretum', 'Menemsha', 'Gay Head Light'],
+  },
+  {
+    id: 'sconset', region: 'nantucket', name: 'Sconset Sprint', blurb: 'From the ferry out across the moors to Sankaty Head.',
+    stops: ['Steamship Wharf', 'Whaling Museum', 'The Old Mill', 'Nantucket Memorial Airport', 'Sconset Beach', 'Sankaty Head Light'],
+  },
+  {
+    id: 'madaket', region: 'nantucket', name: 'Madaket Run', blurb: "Town to Millie's Bridge and back along the south shore.",
+    stops: ['Straight Wharf', 'Jetties Beach', "Millie's Bridge", 'Cisco Beach', 'Surfside Beach'],
+  },
   {
     id: 'grand', name: 'The Grand Tour', blurb: 'An endurance run across the whole map.',
     stops: ['Fenway Park', 'Kenmore Square', 'Boston University', 'Harvard Bridge', 'Kendall Square', 'Longfellow Bridge', 'TD Garden', 'Bunker Hill Monument', 'Old North Church', 'New England Aquarium', 'South Station', 'Institute of Contemporary Art', 'Christian Science Plaza', 'Fenway Park'],
@@ -348,7 +365,7 @@ export class Missions {
         this.discovered.add(l.name);
         saveJSON('rb.discovered', [...this.discovered]);
         g.audio.discover();
-        hud.toast(l.name, `Landmark discovered · ${this.discovered.size}/${g.map.landmarks.length}`, 3000);
+        hud.toast(l.name, `Landmark discovered · ${g.map.landmarks.filter((q) => q.discovered).length}/${g.map.landmarks.length}`, 3000);
       }
     }
     this._updateRoute(dt);
@@ -370,9 +387,10 @@ export class Missions {
       } else extra = `GPS · ${this.waypoint.name ? esc(this.waypoint.name) + ' · ' : ''}${formatDistance(this.routeRemaining(), g.settings.metric)}`;
     }
     this._placeMarker(this.markerNext, this.waypoint ? this.waypoint : null, 0xa35cff);
+    const found = g.map.landmarks.filter((l) => l.discovered).length;
     g.hud.setMission({
-      title: 'Free Roam',
-      sub: `Landmarks discovered ${this.discovered.size}/${g.map.landmarks.length}`,
+      title: g.region && !g.region.boston ? `Free Roam · ${g.region.name}` : 'Free Roam',
+      sub: `Landmarks discovered ${found}/${g.map.landmarks.length}`,
       extra: extra || 'Press M to open the map and set a waypoint',
     });
   }

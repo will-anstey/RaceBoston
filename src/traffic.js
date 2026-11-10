@@ -21,10 +21,12 @@ function pickType(r) {
 }
 
 export class Traffic {
-  constructor(game) {
+  // opts: { graph, map, collision } for a region other than the one loaded first.
+  constructor(game, opts = {}) {
     this.g = game;
-    this.graph = game.graph;
-    this.map = game.map;
+    this.graph = opts.graph || game.graph;
+    this.map = opts.map || game.map;
+    this.cw = opts.collision || game.collision;
     this.cars = [];
     this.pool = new Map();
     this.target = 26;
@@ -453,7 +455,7 @@ export class Traffic {
     c.heading += c.spin * dt;
     // Wrecks still collide with buildings.
     const out = { depth: 0, nx: 0, nz: 0 };
-    if (this.g.collision.resolveCircle(c.x, c.z, c.wid / 2 + 0.2, out, c.y)) {
+    if (this.cw.resolveCircle(c.x, c.z, c.wid / 2 + 0.2, out, c.y)) {
       c.x += out.nx * out.depth; c.z += out.nz * out.depth;
       const vn = c.vx * out.nx + c.vz * out.nz;
       if (vn < 0) { c.vx -= 1.3 * vn * out.nx; c.vz -= 1.3 * vn * out.nz; }

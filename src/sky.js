@@ -106,6 +106,8 @@ export class Sky {
     };
     this.wx = { cloud: 0.2, rain: 0, snow: 0, fog: 0, wind: 0.15, windDir: 0.7, flash: 0, wet: 0, cover: 0 };
     this.alt = 0;
+    this.farCap = 8500;      // the furthest the fog lets you see (flying: much further)
+    this.cloudFog = 0;       // inside a cloud layer (0..1)
     this.envCloud = -1;
     this.envTime = 0;
     this._c = new THREE.Color();
@@ -225,9 +227,17 @@ export class Sky {
     fog.color.lerp(c.setRGB(1, 1, 1), w.flash * 0.25);
     const thin = Math.max(0.07, 1 - 0.45 * w.rain - 0.42 * w.snow - 0.93 * w.fog);
     fog.near = Math.max(2, f.near * Math.max(0.01, 1 - 0.6 * w.rain - 0.5 * w.snow - 0.99 * w.fog)) + a * 1.6 * thin;
-    fog.far = Math.min(8500, Math.max(150, f.far * thin) + a * 4 * thin);
-    U.uFogColor.value.copy(fog.color);
+    fog.far = Math.min(this.farCap, Math.max(150, f.far * thin) + a * 4 * thin);
     U.uFogMix.value = Math.min(0.97, w.fog * 0.95 + w.rain * 0.35 + w.snow * 0.45) * Math.max(0, 1 - a / 600);
+    // Inside a cloud: a grey-white blank a hundred metres deep.
+    const cf = this.cloudFog;
+    if (cf > 0.001) {
+      fog.color.lerp(c.setRGB(0.72, 0.75, 0.8).multiplyScalar(1 - 0.45 * w.rain - 0.6 * p.night), cf);
+      fog.near = fog.near * (1 - cf);
+      fog.far = fog.far + (110 - fog.far) * cf;
+      U.uFogMix.value = Math.max(U.uFogMix.value, cf);
+    }
+    U.uFogColor.value.copy(fog.color);
   }
 
   _buildEnv() {
@@ -246,6 +256,12 @@ export class Sky {
   }
 
   get fogFar() { return this.scene.fog.far; }
+
+  setCloudFog(k) {
+    if (Math.abs(k - this.cloudFog) < 0.005) return;
+    this.cloudFog = k;
+    if (this.fogBase) this._applyLight();
+  }
 
   // See further the higher you fly (altitude in meters; 0 restores the preset).
   setFogBoost(alt) {

@@ -149,6 +149,7 @@ export function ribbon(b, pts, hw, y, perVertex, prev, next, segFilter, ys) {
 }
 
 export function meshOf(geo, mat, order, { shadow = false, receive = true } = {}) {
+  if (!geo) return null;      // (an empty layer: the islands have no rail, for one)
   const m = new THREE.Mesh(geo, mat);
   m.renderOrder = order;
   m.castShadow = shadow;

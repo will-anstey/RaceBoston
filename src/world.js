@@ -43,7 +43,9 @@ export async function buildWorld(map, graph, scene, progress = () => {}) {
   // Terrain: map layers are built flat (y = lift above the ground) and draped.
   const T = map.terrain;
   const fine = { minX: play.minX - 400, maxX: play.maxX + 400, minZ: play.minZ - 400, maxZ: play.maxZ + 400 };
-  const drape = (geo, ground = null) => drapeGeometry(geo, T, { cell: 20, coarse: 80, fine, ground });
+  const C = map.coarse || 1, island = C > 1;
+  const drape = (geo, ground = null) => drapeGeometry(geo, T, { cell: 20 * C, coarse: 80 * C, fine, ground });
+  world.island = island;
   // Ribbons already split every 10-15 m (roads, sidewalks, rail): heights only.
   const drapeRibbon = (geo) => drapeGeometry(geo, T, { slice: false });
   world.drape = drape;
@@ -84,14 +86,17 @@ export async function buildWorld(map, graph, scene, progress = () => {}) {
   // Everything that writes depth goes first: far ground, sea, water bodies
   // and the land mesh (hills hide what is behind them; tunnels stay hidden).
   {
-    const outer = new GeoBuilder({ color: [Uint8Array, 3, true] });
-    const S = 40000;
-    addPolygon(outer, [Float32Array.from([-S, S, S, S, S, -S, -S, -S])], -0.4, LAND_COLOR);
-    add(meshOf(outer.build(), mats.far, -64));
-    // The open sea: freezes over too in a cold snap (aIce 3, ice.js).
+    // (The islands have the ocean all round them instead: see backdrop.js.)
+    if (!island && !map.noOuter) {
+      const outer = new GeoBuilder({ color: [Uint8Array, 3, true] });
+      const S = 40000;
+      addPolygon(outer, [Float32Array.from([-S, S, S, S, S, -S, -S, -S])], -0.4, LAND_COLOR);
+      world.outer = add(meshOf(outer.build(), mats.far, -64));
+    }
+    // The open sea: freezes over too in a cold snap (aIce 3, ice.js); the islands' doesn't.
     const sea = new GeoBuilder({ aIce: [Uint8Array, 1, false] });
     sea.pos.p3(wb.minX, 0, wb.minZ); sea.pos.p3(wb.maxX, 0, wb.minZ); sea.pos.p3(wb.maxX, 0, wb.maxZ); sea.pos.p3(wb.minX, 0, wb.maxZ);
-    for (let k = 0; k < 4; k++) sea.attrs.aIce.buf.p1(3);
+    for (let k = 0; k < 4; k++) sea.attrs.aIce.buf.p1(island ? 0 : 3);
     sea.idx.p3(0, 3, 2); sea.idx.p3(0, 2, 1);
     mats.waterIce = MAT.makeWaterMaterial({ ice: true });
     add(meshOf(sea.build(), mats.waterIce, -63));
@@ -99,7 +104,8 @@ export async function buildWorld(map, graph, scene, progress = () => {}) {
   // ------------------------------------------------------- land
   {
     const land = new GeoBuilder({ color: [Uint8Array, 3, true] });
-    for (const p of map.land) addPolygon(land, p, 0, LAND_COLOR);
+    // (The islands: lawns, fields and scrub between the houses, not city ground.)
+    for (const p of map.land) addPolygon(land, p, 0, island ? 0x8c9a66 : LAND_COLOR);
     add(meshOf(drape(land.build(), underWater), mats.land, -60));
     // Banks and sea walls: from the edge of the land down under the water.
     const bank = new GeoBuilder({});
@@ -137,7 +143,7 @@ export async function buildWorld(map, graph, scene, progress = () => {}) {
     // level with the open sea; see ice.js).
     const water = new GeoBuilder({ aIce: [Uint8Array, 1, false] });
     map.water.forEach((p, wi) => {
-      const level = map.waterLevels[wi], kind = map.waterKind[wi] || (level < 0.3 ? 3 : 0);
+      const level = map.waterLevels[wi], kind = island ? (level < 0.3 ? 0 : 2) : map.waterKind[wi] || (level < 0.3 ? 3 : 0);
       const flat = [], holes = [];
       p.forEach((r, k) => { if (k) holes.push(flat.length / 2); for (const v of r) flat.push(v); });
       const tri = earcut(flat, holes.length ? holes : null, 2);
@@ -198,7 +204,7 @@ export async function buildWorld(map, graph, scene, progress = () => {}) {
       const f = fb.get(pi);
       for (const pts of f ? [f.before, f.after] : [p.pts]) if (pts.length >= 4) ribbon(paths, pts, p.width / 2, 0.05, () => paths.attrs.color.buf.p3(c[0], c[1], c[2]));
     });
-    add(meshOf(drapeGeometry(paths.build(), T, { cell: 40, coarse: 80, fine }), mats.ground, -34));
+    add(meshOf(drapeGeometry(paths.build(), T, { cell: 40 * C, coarse: 80 * C, fine }), mats.ground, -34));
     if (world.footbridges.length) addFootbridges(world.footbridges, add, mats);
   }
   progress(0.15, 'Paving roads');
@@ -371,7 +377,8 @@ export async function buildWorld(map, graph, scene, progress = () => {}) {
   const skip = world.landmarks.handled, wallsDone = world.landmarks.wallsOnly;
 
   // ------------------------------------------------------ buildings
-  const chunkKey = (x, z) => Math.floor((x - play.minX) / CHUNK) * 1000 + Math.floor((z - play.minZ) / CHUNK);
+  const CH = island ? CHUNK * 2 : CHUNK;
+  const chunkKey = (x, z) => Math.floor((x - play.minX) / CH) * 1000 + Math.floor((z - play.minZ) / CH);
   const chunks = new Map();
   const getChunk = (x, z) => {
     const k = chunkKey(x, z);

@@ -102,10 +102,16 @@ export class BoatMode {
 
   // ------------------------------------------------------------ start/stop
   // opts: { type, race: regatta id, ferry: ferry route id, rescue: rescue id, searace: sea race id, at: { x, z, heading } }
-  start({ type = 'motor', race = null, ferry = null, rescue = null, searace = null, tow = null, at = null } = {}) {
+  start({ type = 'motor', race = null, ferry = null, rescue = null, searace = null, tow = null, at = null, where = null } = {}) {
     if (!this.path) return false;
     const g = this.g;
     this.stop();
+    // (The water you're on: Boston's, or an island's.)
+    this.env.cw = g.collision;
+    this.env.ice = !g.region || g.region.boston ? g.ice : null;
+    this.island = g.region && !g.region.boston ? g.region : null;
+    this.launchAt = at ? { ...at } : null;
+    this.where = where;
     const def = race ? REGATTAS.find((r) => r.id === race) : null;
     if (def) type = def.boat;
     const route = ferry ? FERRY_ROUTES.find((r) => r.id === ferry) : null;
@@ -156,7 +162,7 @@ export class BoatMode {
     }
     // On a frozen river, launch into open water: an icebreaker's channel
     // (or a lead cut from the dock). The icebreaker makes its own way.
-    if (!def && !BOAT_TYPES[type].breaker && g.ice.level > 0.3) {
+    if (!def && !BOAT_TYPES[type].breaker && g.ice.level > 0.3 && !this.island) {
       const pr = this.path.project(x, z, null, {});
       const ib = g.boats.list.filter((o) => o.type === 'icebreaker').sort((a, c) => Math.abs(a.s - pr.s) - Math.abs(c.s - pr.s))[0];
       if (!at && ib) {
@@ -167,7 +173,7 @@ export class BoatMode {
         g.ice.breakAt(x, z, 14, 0);
       }
     }
-    if (!route && !call) ({ x, z, h } = this._settle(x, z, h, g.boats.pathFor(x, z) || this.path));   // (along the waterway it's on)
+    if (!route && !call && !this.island) ({ x, z, h } = this._settle(x, z, h, g.boats.pathFor(x, z) || this.path));   // (along the waterway it's on)
     body.reset(x, z, h, g.map.terrain.h(x, z));
     this.active = true;
     this.acc = 0;
@@ -224,9 +230,24 @@ export class BoatMode {
     return { x, z, h };
   }
 
+  // Open water near (x, z) that this hull fits in, searching outward (an island harbour).
+  launchNear(x, z, type) {
+    const b = new BoatBody(type), env = this.env;
+    env.cw = this.g.collision; env.ice = null;
+    for (const r of [0, 20, 40, 70, 100, 140, 190, 250, 330, 430, 560]) {
+      for (let k = 0; k < (r ? 24 : 1); k++) {
+        const a = (k / 24) * Math.PI * 2, px = x + Math.cos(a) * r, pz = z + Math.sin(a) * r;
+        if (!env.cw.isWaterSurface(px, pz)) continue;
+        for (let q = 0; q < 8; q++) { const h = (q / 8) * Math.PI * 2; if (b.fits(env, px, pz, h)) return { x: px, z: pz, heading: h }; }
+      }
+    }
+    return null;
+  }
+
   // Water to launch into near the car (E in free roam): { x, z, heading } or null.
   findLaunch(cx, cz, heading, type) {
     const b = new BoatBody(type), env = this.env, cw = this.g.collision, sea = !!b.T.sea;
+    env.cw = cw; env.ice = !this.g.region || this.g.region.boston ? this.g.ice : null;
     const P = this.path, pr = P ? P.project(cx, cz, null, {}) : null;
     const onRiver = pr && pr.dist < 300 && !sea;
     // (Sea boats need room: they look further out.)
@@ -235,7 +256,7 @@ export class BoatMode {
         const a = heading + (k / 16) * Math.PI * 2;
         const x = cx + Math.sin(a) * r, z = cz - Math.cos(a) * r;
         if (!cw.isWaterSurface(x, z)) continue;
-        if (sea && this.g.ice.waterAt(x, z) !== 'sea') continue;   // the harbour only
+        if (sea && (!this.g.region || this.g.region.boston) && this.g.ice.waterAt(x, z) !== 'sea') continue;   // the harbour only
         let h = a;
         if (onRiver) {
           const q = P.at(P.project(x, z, pr.s, {}).s, 0, {});
@@ -598,6 +619,11 @@ export class BoatMode {
       this.camera.snap();
       return;
     }
+    if (this.island) {
+      const p = this.launchAt;
+      if (p) { b.reset(p.x, p.z, p.heading, this.g.map.terrain.h(p.x, p.z)); this.camera.snap(); }
+      return;
+    }
     const P = this.g.boats.pathFor(b.x, b.z) || this.path, pr = P.project(b.x, b.z, null, {});
     if (pr.dist > 400 && P === this.path) return;
     // Back to the Charles's centre line, or (out in the harbour) the nearest clear water off the channel.
@@ -634,8 +660,11 @@ export class BoatMode {
     if (this.locTimer <= 0) {
       this.locTimer = 0.25;
       g.updateLocation(0.25, b.x, b.z, b.y);
-      const pr = this.path.project(b.x, b.z, null, this._pr);
-      hud.setStreet(pr.dist < Math.max(pr.d > 0 ? this.path.at(pr.s).right : this.path.at(pr.s).left, 40) + 30 ? 'Charles River' : 'Boston Harbor', hud.streetArea.textContent);
+      if (this.island) hud.setStreet(this._islandWater(b.x, b.z), hud.streetArea.textContent);
+      else {
+        const pr = this.path.project(b.x, b.z, null, this._pr);
+        hud.setStreet(pr.dist < Math.max(pr.d > 0 ? this.path.at(pr.s).right : this.path.at(pr.s).left, 40) + 30 ? 'Charles River' : 'Boston Harbor', hud.streetArea.textContent);
+      }
     }
     if (r) {
       const C = this.course, pr = this.path.project(b.x, b.z, r.sPrev, {});
@@ -653,9 +682,9 @@ export class BoatMode {
       hud.setScore(`<div class="small">Place</div><div class="big">${place}</div><div class="small">${best ? 'Best ' + formatTime(best.time) : 'Bow ' + (YOU + 1) + ' of 10'}</div>`);
       return;
     }
-    const near = this._shoreNear(), sea = g.ice.waterAt(b.x, b.z) === 'sea';
+    const near = this._shoreNear(), sea = !!this.island || g.ice.waterAt(b.x, b.z) === 'sea';
     const water = sea ? 'harbor' : 'Charles', h = this.help && this.help.boat.help, hb = this.help && this.help.boat;
-    let sub = g.ice.frozen ? `The ${water} is frozen: icebreakers are out` : g.ice.forming ? `Ice is forming on the ${sea ? 'harbor' : 'river'}` : split || (sea ? 'Boston Harbor' : 'The Charles River');
+    let sub = this.island ? `${this.where ? this.where + ' · ' : ''}${this.island.name}` : g.ice.frozen ? `The ${water} is frozen: icebreakers are out` : g.ice.forming ? `Ice is forming on the ${sea ? 'harbor' : 'river'}` : split || (sea ? 'Boston Harbor' : 'The Charles River');
     if (h) {
       sub = h.phase === 'approach' || h.phase === 'close' ? `Icebreaker ${hb.name} on her way · ${formatDistance(h.dist || 0, metric)}`
         : h.phase === 'around' ? `${hb.name} is breaking you out of the ice`
@@ -669,6 +698,19 @@ export class BoatMode {
       extra: `${keys} · C camera<br>${near ? '<b style="color:#7ee081">E go ashore</b>' : 'Get near the bank and press E to go ashore'}${help} · M map · Esc menu`,
     });
     hud.setScore(null);
+  }
+
+  // Name of the water round an island: the nearest harbour, or the sound.
+  _islandWater(x, z) {
+    const r = this.island, m = this.g.map.meta;
+    let best = null, bd = 2500;
+    for (const [name, lat, lon] of r.info.harbors || []) {
+      const hx = (lon - m.origin.lon) * m.metersPerDegree.lon, hz = -(lat - m.origin.lat) * m.metersPerDegree.lat, d = Math.hypot(hx - x, hz - z);
+      if (d < bd) { bd = d; best = name; }
+    }
+    if (best) return best;
+    const lat = m.origin.lat - z / m.metersPerDegree.lat;
+    return r.id === 'vineyard' ? (lat > 41.42 ? 'Vineyard Sound' : 'Atlantic Ocean') : lat > 41.3 ? 'Nantucket Sound' : 'Atlantic Ocean';
   }
 
   _shoreNear() {

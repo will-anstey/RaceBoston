@@ -128,7 +128,7 @@ export class StreetSigns {
       im.castShadow = true;
       this.group.add(im);
     }
-    this.grid = new PointGrid(this.map.meta.play, 40);
+    this.grid = new PointGrid(this.map.meta.play, 40 * (this.map.coarse || 1));
     this.posts.forEach((p) => this.grid.add(p.x, p.z, 0));
     this.grid.build();
   }

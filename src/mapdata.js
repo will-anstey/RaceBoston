@@ -31,9 +31,10 @@ export const hasSidewalk = (r) => r.cls >= RC.PRIMARY && r.cls <= RC.LIVING && !
 // Typical travel speed (m/s) per road class for AI and route timing.
 export const CLASS_SPEED = [26, 20, 14.5, 13.5, 12.5, 10.5, 7, 6];
 
-export async function loadMap(url, onProgress) {
+// terrainFile: the height grid beside it (Boston's is terrain.bin, an island's <id>.terrain.bin).
+export async function loadMap(url, onProgress, terrainFile = 'terrain.bin') {
   // The terrain grid is a sibling binary file; fetch it alongside the JSON.
-  const terrainBuf = fetch(url.replace(/[^/]*$/, 'terrain.bin')).then((r) => (r.ok ? r.arrayBuffer() : null)).catch(() => null);
+  const terrainBuf = fetch(url.replace(/[^/]*$/, terrainFile)).then((r) => (r.ok ? r.arrayBuffer() : null)).catch(() => null);
   const res = await fetch(url);
   if (!res.ok) throw new Error(`Could not load ${url} (HTTP ${res.status})`);
   const total = Number(res.headers.get('X-Raw-Length')) || Number(res.headers.get('Content-Length')) || 8.0e6;
@@ -129,6 +130,9 @@ function decode(raw, terrain) {
   }
   return {
     meta: raw.meta,
+    // Islands are big and thinly built up: their grids and draping are coarser.
+    region: raw.meta.region || 'boston',
+    coarse: raw.meta.region && raw.meta.region !== 'boston' ? 2.5 : 1,
     terrain,
     nodes,
     nodeY, nodeRel, nodeG,

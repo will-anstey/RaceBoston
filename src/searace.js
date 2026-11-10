@@ -32,6 +32,21 @@ export const SEA_RACES = [
     gates: [[900, 120], [1500, 150], [2100, 60], [2700, 120], [3300, 140], [3900, 120]],
     names: ['Harbor Express', 'Bay Runner', 'Island Queen', 'Seaport Flyer', 'Spray', 'Harbor Belle'],
   },
+  // The islands: gates by latitude and longitude (no harbour channel line there).
+  {
+    id: 'vineyard-sprint', region: 'vineyard', name: 'Nantucket Sound Sprint', boat: 'motor', field: 6, laps: 2, loop: true, width: 80,
+    blurb: 'Two laps off Oak Bluffs and East Chop in open water',
+    pts: [[41.4568, -70.5386], [41.4650, -70.5422], [41.4634, -70.5258], [41.4514, -70.5246], [41.4518, -70.5338]],
+    names: ['Island Queen', 'Chappy Rocket', 'Menemsha Mako', 'East Chop Express', 'Inkwell', 'Gay Head Gale', 'Lagoon Runner'],
+  },
+  {
+    id: 'nantucket-harbor', region: 'nantucket', name: 'Nantucket Harbor Run', boat: 'motor', field: 6, laps: 1, loop: false, width: 70,
+    blurb: 'From Brant Point up the harbor past Pocomo, and back to town by Coatue',
+    // Out along the south side and through the narrows, round the upper harbor, back on the Coatue side.
+    pts: [[41.2920, -70.0790], [41.2965, -70.0640], [41.3030, -70.0480], [41.3135, -70.0420], [41.3215, -70.0300],
+      [41.3165, -70.0440], [41.3055, -70.0540], [41.2985, -70.0680], [41.2885, -70.0880]],
+    names: ['Sconset Swell', 'Coatue Flyer', 'Brant Point Bullet', 'Grey Lady', 'Madaket Mist', 'Rainbow Fleet'],
+  },
   {
     id: 'trawlers', name: 'Fishing Fleet Run', boat: 'trawler', field: 5, laps: 1, loop: false, width: 80,
     blurb: 'Five trawlers race home from Castle Island to the Fish Pier',
@@ -52,8 +67,8 @@ export class SeaRace {
   constructor(bm, def) {
     this.bm = bm; this.g = bm.g; this.def = def;
     const B = this.g.boats, H = (this.P = B.harbor);
-    this.ok = !!H;
-    if (!H) return;
+    this.ok = !!H || !!def.pts;
+    if (!this.ok) return;
     this.rng = mulberry32((Date.now() & 0xffffff) ^ 0x1b873593);
     this.T = BOAT_TYPES[def.boat];
     this.gates = this._layGates();
@@ -104,8 +119,9 @@ export class SeaRace {
   // Each gate across the way it's raced: centre, the line's direction (dx,
   // dz) and its across (nx, nz); buoys inside the water (narrowed if need be).
   _layGates() {
-    const P = this.P, cw = this.g.collision, def = this.def;
-    const pts = def.gates.map(([s, d]) => { const p = P.at(s, d, {}); return { x: p.x, z: p.z }; });
+    const P = this.P, cw = this.g.collision, def = this.def, meta = this.g.map.meta;
+    const pts = def.pts ? def.pts.map(([lat, lon]) => ({ x: (lon - meta.origin.lon) * meta.metersPerDegree.lon, z: -(lat - meta.origin.lat) * meta.metersPerDegree.lat }))
+      : def.gates.map(([s, d]) => { const p = P.at(s, d, {}); return { x: p.x, z: p.z }; });
     return pts.map((p, i) => {
       const a = pts[def.loop ? (i - 1 + pts.length) % pts.length : Math.max(0, i - 1)], b = pts[def.loop ? (i + 1) % pts.length : Math.min(pts.length - 1, i + 1)];
       let dx = b.x - a.x, dz = b.z - a.z;

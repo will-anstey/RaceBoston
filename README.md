@@ -29,6 +29,17 @@ carrying commuters between landings on the frozen river (they walk down to the l
 onto the foredeck, and off again at their stop), answer a Harbor Rescue call, racing the clock to boats
 capsized in the harbor ice, or tow a big ship frozen in out at sea back into port.
 
+Or take to the skies. Fly a Cessna 172 on your own, or fly airline flights gate to gate in a Cessna 402
+island hopper, an Embraer E175, an A320, a 787-9 Dreamliner or an A380, each with its own weight, thrust,
+handling and takeoff and approach speeds. Taxi from a remote stand to your gate, wait while the passengers
+board, push back, taxi out and hold short until the tower clears you, then take off. At the other end, land,
+taxi in and park so they can get off. Once you're up, fly wherever you like; thunderstorms throw you around.
+The Boodyear Glimp, a 60 m airship, casts off from a mooring mast at Logan. Out over the ocean, about 110
+and 150 km south-east of the city, lie Martha's Vineyard and Nantucket, built from OpenStreetMap the same
+way as Boston: 24,000 buildings and 5,600 streets on the Vineyard, 14,700 and 3,100 on Nantucket, with
+their towns, harbors, lighthouses and airports. Land on an island and it unlocks. After that you can start
+there, drive its roads, take boats out of its harbors, and race on land and sea.
+
 ## Play
 
 The game is a set of static files, so any local web server works. Browsers won't load the
@@ -84,6 +95,9 @@ the 15 MB map file, which helps if you host the game on a network; otherwise it 
 
     They're diesels like the icebreaker: **W** ahead, **S** astern, **H** the horn. From the car, **E**
     by the harbor takes one out; by the river, they stay put.
+  - On the islands (once unlocked), boats go out of Vineyard Haven, Oak Bluffs, Edgartown and Menemsha,
+    and Nantucket town, Madaket and Polpis: a motorboat, the harbor ferry or a fishing boat. **E** by the
+    water takes one out there too.
   - **Head of the Charles** (Championship Eights or Singles) – a three-mile head race on the real course.
     You start below the BU boathouse, go under the BU, River Street, Western Avenue, Weeks, Anderson and
     Eliot bridges, and finish by Herter Park. Ten crews start 12 s apart, and you're bow 6. It's a rolling
@@ -131,11 +145,13 @@ the 15 MB map file, which helps if you host the game on a network; otherwise it 
     and your best is saved. Icebreakers on patrol keep clear of the wrecks.
   - **Sea Races** – head-to-head races at sea. The whole field is out on the course at once, like a
     motor race. The other boats use the same hull physics as yours, each a shade quicker or slower and on
-    its own line, and they ease off for the hard turns. Everyone bumps everyone. There are four:
+    its own line, and they ease off for the hard turns. Everyone bumps everyone. There are six:
     - **Powerboat Grand Prix**: six motorboats, two laps round President Roads at 90 mph.
     - **Tugboat Derby**: five tugs flat out down the Inner Harbor, slaloming the buoys.
     - **Harbor Ferry Dash**: catamarans from Long Wharf out to Castle Island.
     - **Fishing Fleet Run**: trawlers racing home from Castle Island to the Fish Pier.
+    - **Nantucket Sound Sprint** (Martha's Vineyard): two laps off Oak Bluffs and East Chop in open water.
+    - **Nantucket Harbor Run** (Nantucket): from Brant Point up the harbor past Pocomo, and back by Coatue.
 
     The course is a line of gates, each a pair of buoys (red to port, green to starboard, yellow for
     the start and finish), with a beam over the next one. Pass each between its buoys, or go back.
@@ -157,16 +173,44 @@ the 15 MB map file, which helps if you host the game on a network; otherwise it 
     you ease off, so start slowing her early. Stop her in her berth (outlined in green) to deliver her.
     Groundings, bumps and parted lines come off the fee, and a quick tow earns a bonus. While the tow is
     under way, only the ships at anchor stay in the harbor.
+- **Take to the Skies** – fly from Logan, or from an island airport once you've unlocked it.
+  - **Solo and free flight** – the Cessna 172 on your own, or any of the airliners empty. You start lined
+    up on the runway into the wind. Take off and go where you like: over the city, out over the harbor or
+    down to the islands. Each type rotates at its real speed: 55 kt for the Cessna 172, 90 for the
+    Cessna 402, about 130 for the E175, 140 for the A320, 150 for the A380 and 155 for the 787, and the
+    big jets need most of a long runway.
+  - **Airline Flights** – 15 routes, from the Cessna 402 island hop to the Vineyard to a superjumbo dare
+    into Nantucket's 6,300 ft runway; the island routes open once you've landed there. You start on a
+    remote stand with the engines running. Follow the green taxi lights to your gate and stop on the mark.
+    The passengers walk aboard over the jet bridge at Logan's terminals, or across the apron and up the
+    stairs on the islands, and a tug pushes a jet back. Taxi to the runway the tower gives you (into the
+    wind, and long enough for your type; the first officer sets the takeoff flaps as you start rolling),
+    hold short until you're cleared, line up and take off. **J** skips ahead to the approach, and **[ ]**
+    speed up time in the cruise. Land, taxi to the arrival gate, and the passengers get off. The pay
+    depends on the landing (how many feet per minute you touched down at), how comfortable the ride was
+    (g-loads and bank), and how tidily you taxied and parked. Wingtip, tail and engine strikes come off
+    it, and each route keeps your best score. Logan's traffic plays along: arrivals go around if you're on
+    the runway, and planes on the ground give way and keep clear of your route.
+  - **The Boodyear Glimp** – a 60 m airship moored nose-first to a mast by the airfield. Open the
+    throttle to cast off, climb with **↓** and descend with **↑** (like a stick, as in the planes), steer
+    with **A D** and trim her with ballast (**Z X**). She cruises at 35 mph and drifts with the wind. To
+    moor again, nose her up to a mast (every airfield has one), slow and low, and the ground crew takes
+    her lines.
 - **Fly Around** – a ghost camera that goes anywhere, through buildings and underground. Press **G** to
   start or stop flying, and **Enter** to drop the car on the road below you. On the map (**M**), click
   a spot to jump there.
 - **Free Roam** – drive anywhere and discover 46 landmarks, including Fenway Park, the State House, the
   USS Constitution, MIT, Northeastern and Logan Airport. Press **M** and click the map to set a GPS
-  waypoint.
+  waypoint. Once you've landed on an island you can start there too: 23 landmarks on Martha's Vineyard,
+  from the Gay Head Cliffs and the Flying Horses Carousel to the Jaws bridge, and 21 on Nantucket, from
+  Brant Point Light and the Whaling Museum out to Sankaty Head.
 - **Races** – 8 checkpoint races between real landmarks, such as the Freedom Trail Dash, Back Bay Sprint,
   Charles River Loop and The Grand Tour. The Logan Express runs from South Station to the terminals through
   the Ted Williams Tunnel, then back to the North End under the harbor. Gold, silver and bronze times come
-  from an ideal lap of each route (road types, bends, braking), and your best times are saved.
+  from an ideal lap of each route (road types, bends, braking), and your best times are saved. The
+  islands add four more once you've landed there: the Down-Island Dash (Vineyard Haven to Edgartown by
+  Oak Bluffs and the Jaws bridge), the Up-Island Run (the airport to the Gay Head cliffs by way of
+  Menemsha), the Sconset Sprint across Nantucket's moors to Sankaty Head, and the Madaket Run.
 - **Taxi Shift** – pick up passengers, stop in the zone, and drop them off before the shift clock runs out.
   Fast, clean rides earn tips. Passengers have opinions about the Pike.
 
@@ -194,6 +238,24 @@ the 15 MB map file, which helps if you host the game on a network; otherwise it 
 | F | Fullscreen |
 | Esc / P | Pause |
 
+Flying:
+
+| Key | Action |
+| --- | --- |
+| W / S | Throttle up / down (S at idle on the ground: brakes, and reverse thrust on a jet) |
+| ↑ ↓ | Pitch: ↑ is nose down, like a stick (Settings can swap it) |
+| A D / ← → | Roll (on the ground: steer the nosewheel) |
+| Q E | Rudder |
+| Space | Wheel brakes |
+| Z X | Flaps up / down (the Glimp: ballast) |
+| G | Gear up / down |
+| B | Speed brakes |
+| U | Autopilot: hold altitude, heading and speed |
+| [ ] | Time compression, in the air above 1,000 ft |
+| J | Skip ahead to the approach (airline flights) |
+| C | Camera: chase, far chase, cockpit (with a primary flight display), tower |
+| Enter | Climb out onto the nearest road (stopped on the ground) |
+
 In a train, W/↑ is power, S/↓ the brake and Space the emergency brake. In a rowing boat, hold W to
 row, Shift for a power ten, S to hold water and back down, and A D to steer. In the icebreaker, W is
 ahead, S astern, A D the helm (the bow thruster turns her when stopped) and H the horn. On a Harbor
@@ -202,7 +264,9 @@ an icebreaker.
 
 In **Settings** you can set the amount of traffic, trains (Off to Max: about 22 trains around you),
 planes (Off to Max: a landing and a takeoff every minute, six overflights and a full terminal), boats on
-the river and the weather (Dynamic changes every few minutes, or pick one).
+the river and the weather (Dynamic changes every few minutes, or pick one). For flying, **Flight
+controls** is Assisted (fly-by-wire: she holds her attitude and bank when you let go, and won't stall) or
+Direct (the raw aircraft, which you can stall), and the tower's voice can be turned off.
 
 Gamepads work too: RT/LT for gas and brake, A handbrake, B boost, X reset, Y camera, Start pause.
 On touch devices, on-screen buttons appear automatically.
@@ -314,6 +378,25 @@ painted on canvases in the browser:
   - Arrivals are spaced about a minute apart, and go around if the runway is still occupied.
   - Overflights cross at altitude.
   - Planes on the ground stop for your car and are solid. You can hear the jets.
+- **Flying** – each aircraft is a rigid body. Lift, drag and side force come from the angle of attack and
+  sideslip. The engines lose power as the air thins with height (the standard atmosphere), a propeller's
+  thrust also falls with airspeed, and close to the ground the wing gets extra lift (ground effect).
+  Flaps add lift and drag and have speed limits. The wheels are springs with brakes and a steerable
+  nosewheel, and a tail strike, an engine pod in the grass or a wingtip on a terminal all register. A
+  hard enough contact, or the water, ends the flight. With assisted controls the keys command pitch and
+  roll: let go and she holds her attitude and bank (levelling out from a shallow one), with stall and
+  over-bank protection and a yaw damper. The cockpit view has a primary flight display: the attitude,
+  speed and altitude tapes, vertical speed, heading, flaps, gear, thrust and warnings. The autopilot
+  holds altitude, heading and speed.
+- **Weather in the air** – the wind comes from the weather, with gusts that build in rain and get rough
+  in a thunderstorm: storm cells with up- and downdrafts, sudden jolts, and microburst outflow near the
+  ground. Cloud layers have a base and a top, and flying into them fogs the view.
+- **The islands** – Martha's Vineyard and Nantucket are built the same way as Boston, with their own
+  ground from the elevation data, shingled houses (their heights guessed where OSM has none), ponds,
+  beaches, harbors and the airports at MVY and ACK, each with its runways, taxiways and stands. They load
+  in the background as you fly toward them. Between them and Boston there's a coarse backdrop of eastern
+  Massachusetts, Cape Cod and Buzzards Bay (300 m height cells) and the open ocean, so the coast is there
+  as you fly down it, and the full map shows the whole coast while you're in the air.
 - **Trains** – OSM route relations tell which track each line uses. Red, Orange and Blue Line cars,
   two-car Green Line trolleys with pantographs, MBTA bilevel commuter trains, Amtrak and Grand Junction
   freight all follow the real track. They stop at stations, reverse at terminals, and slip into tunnel
@@ -361,6 +444,14 @@ src/                  game code (ES modules, no build step)
   trains.js           AI trains on the rail network (and drawing yours)
   airport.js          Logan's runways, taxiways, markings and airfield lights
   planes.js           aircraft: arrivals, taxiing, departures, overflights
+  flight.js           flight physics: the airframe, engines, wheels, atmosphere, fly-by-wire, turbulence
+  aircraft.js         the types you can fly (Cessna 172 to A380, the Glimp): specs, models, crash points
+  flightmode.js       flying: controls, cameras, autopilot, landings, strikes and crashes, the mast, sounds
+  airports.js         Logan, MVY and ACK for flying: runway ends, taxi routes, hold-short points, stands
+  airline.js          Airline Flights: the routes, taxi lights, boarding and deboarding, pushback, the tower, pay
+  pfd.js              the cockpit's primary flight display
+  regions.js          Boston and the islands: loading a map in the background, switching between them
+  backdrop.js         the low-detail coast and the ocean between the maps
   fly.js              ghost camera for fly mode
   boats.js            boats: river and harbor channel lines, hull physics, rowing and paddling, models, AI crews, icebreakers, ships, wakes
   boatmode.js         on the water: boat mode, E to board / go ashore, Q for an icebreaker, the Head of the Charles race
@@ -379,6 +470,9 @@ src/                  game code (ES modules, no build step)
   missions.js         free roam, races, taxi; hud.js: HUD, minimap, big map
 data/boston.json      processed map, built from OpenStreetMap
 data/terrain.bin      10 m ground height grid, from USGS elevation data
+data/vineyard.*       Martha's Vineyard: map (.json) and ground heights (.terrain.bin)
+data/nantucket.*      Nantucket: map and ground heights
+data/backdrop.*       300 m heights of the coast and sea floor between the maps
 tools/serve.mjs       the small web server run.sh uses
 vendor/               three.js r186 (with its post-processing add-ons) and earcut (MIT / ISC)
 Retro/                a slimmed-down version for old PCs (Netscape Navigator)
@@ -396,6 +490,10 @@ Road and tunnel heights are an educated guess from OSM's vertical-order tags. Th
 the solver still works relative to it: a road keeps its height above the ground, so a highway on a
 hillside follows the hill. Subway depths are a guess too: OSM records which tunnel is below which, not how
 deep they are. Garage and loading-dock ramps on service roads are left out.
+
+The flight models are tuned to each type's published speeds, weights and thrust, but they are a game's
+approximation, not a certified simulator. Most island buildings have no height in OSM, so they get a
+typical one for their kind (one and a half to two and a half storeys for a house).
 
 ## Credits
 

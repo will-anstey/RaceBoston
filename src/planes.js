@@ -174,7 +174,7 @@ function buildModel(T) {
 }
 
 // ========================================================== taxi graph
-class TaxiGraph {
+export class TaxiGraph {
   constructor(A) {
     const N = (this.N = A.nodes.length / 2);
     this.x = A.nodes;
@@ -288,6 +288,15 @@ export class Planes {
       const l = Math.hypot(ex - bx, ez - bz) || 1;
       return { ref: st.ref, nodes, taxiNode: nodes[0], ex, ez, fx: (ex - bx) / l, fz: (ez - bz) / l, heading: Math.atan2(ex - bx, -(ez - bz)), occupant: null, reserved: null };
     }).filter((st) => this.graph.route(st.taxiNode, this.depEnds[0]?.entry ?? st.taxiNode));
+    // How big an airliner each stand takes: room to the next stand, and the
+    // lead-in's length (a long jet on a short one would stick out onto the taxilane).
+    for (const a of this.stands) {
+      let room = Infinity;
+      for (const b of this.stands) if (a !== b) room = Math.min(room, Math.hypot(a.ex - b.ex, a.ez - b.ez));
+      let lead = 0;
+      for (let i = 1; i < a.nodes.length; i++) lead += Math.hypot(this.graph.px(a.nodes[i]) - this.graph.px(a.nodes[i - 1]), this.graph.pz(a.nodes[i]) - this.graph.pz(a.nodes[i - 1]));
+      a.room = room; a.lead = lead;
+    }
     this._buildRendering();
     this.setDensity(2, true);
   }
@@ -334,7 +343,21 @@ export class Planes {
     for (const o of this.occ) o.delete(p);
   }
 
+  // The biggest type that fits a stand (for parking, and arrivals headed for it).
+  _fitType(p, st) {
+    const fits = (T) => T.span * 0.5 <= (st.room || 99) * 0.98 && T.len <= (st.lead || 99) + 10;
+    if (fits(p.T)) return;
+    for (const k of ['narrow', 'regional']) if (fits(TYPES[k])) { p.key = k; p.T = TYPES[k]; return; }
+    p.key = 'regional'; p.T = TYPES.regional;
+  }
+
   _park(p, st) {
+    const R = this.playerRoute;
+    if (R) {
+      const off = p.T.len / 2 + 2;
+      if (polyNear(R.pts, st.ex - st.fx * off, st.ez - st.fz * off, this._routeReach(p.T, R.span))) { this._remove(p); return; }
+    }
+    this._fitType(p, st);
     p.state = 'parked'; p.stand = st; st.occupant = p; st.reserved = null;
     const off = p.T.len / 2 + 2;
     p.x = st.ex - st.fx * off; p.z = st.ez - st.fz * off; p.y = 0;
@@ -351,6 +374,7 @@ export class Planes {
     if (!free.length) return null;
     const st = free[Math.floor(Math.random() * free.length)];
     const p = this._newPlane();
+    this._fitType(p, st);
     p.stand = st; st.reserved = p;
     p.end = end;
     // Touchdown 450 m past the threshold; 3-degree glidepath back to a fix 9 km out,
@@ -401,6 +425,7 @@ export class Planes {
     if (!parked.length) return false;
     parked.sort((a, b) => a.parkedAt - b.parkedAt);
     for (const p of parked.slice(0, 6)) {
+      if (this.playerRoute && polyNear(this.playerRoute.pts, p.x, p.z, this._routeReach(p.T, this.playerRoute.span) + 20)) continue;
       const route = this.graph.route(p.stand.taxiNode, end.entry);
       if (!route) continue;
       p.end = end;
@@ -551,6 +576,9 @@ export class Planes {
   _updApproach(p, dt) {
     const a = p.air;
     a.s += p.v * dt;
+    // The player's aircraft in the way on the approach: go around.
+    const pl = this.player;
+    if (pl && !pl.ground && Math.abs(pl.x - p.x) < 1600 && Math.abs(pl.z - p.z) < 1600 && Math.abs(pl.y - p.y) < 220 && a.length - a.s > 600) { this._goAround(p); return; }
     const remain = a.length - a.s;
     if (remain < 2600 && !p.gear) p.gear = true;
     // Claim the runway 2 km out (holds crossings and lineups), but only decide
@@ -689,7 +717,27 @@ export class Planes {
       const ahead = dx * fx + dz * fz, lat = Math.abs(dx * -fz + dz * fx);
       if (ahead > 0 && ahead < 90 && lat < p.T.span / 2 + 3) vt = Math.min(vt, stopAt(p.s + ahead - p.T.len / 2 - 8));
     }
-    const acc = vt > p.v ? 0.9 : -2.0;
+    // The aircraft you're flying, on the ground: give way to it. Kept waiting
+    // too long (nose to nose on a taxiway), it's towed out of the way.
+    const pl = this.player;
+    p.yielding = false;
+    if (pl && pl.ground) {
+      const dx = pl.x - p.x, dz = pl.z - p.z;
+      const ahead = dx * fx + dz * fz, lat = Math.abs(dx * -fz + dz * fx);
+      const dd = Math.hypot(dx, dz), reach = (p.T.span + pl.T.span) * 0.5;
+      // Alongside or crossing, or anywhere ahead within her stopping distance (fast off a runway exit).
+      const toward = ahead > 0 && ahead / Math.max(1, dd) > 0.35;
+      const close = (dd < reach + 45 && ahead > -10) || (toward && dd < (p.v * p.v) / (2 * 2.5) + reach + 30);
+      p.yielding = close;
+      if ((ahead > 0 && ahead < 220 && lat < reach + 6) || close) {
+        const v = close ? 0 : stopAt(p.s + ahead - (p.T.len + pl.T.len) / 2 - 18);
+        vt = Math.min(vt, v);
+        // Waiting on each other: towed away (soon, if they're wingtip to wingtip).
+        if (v < 1) { p.yieldT = (p.yieldT || 0) + dt; if (p.yieldT > (dd < reach + 10 ? 4 : 25)) { this._remove(p); return; } }
+        else p.yieldT = 0;
+      } else p.yieldT = 0;
+    }
+    const acc = vt > p.v ? 0.9 : p.yielding ? -3.0 : -2.0;
     p.v = clamp(p.v + acc * dt, Math.min(p.v, vt), Math.max(p.v, vt));
     if (p.v < 0.2) { p.stuck += dt; if (p.stuck > 35) { p.ghost = 12; p.stuck = 0; } } else p.stuck = Math.max(0, p.stuck - dt);
     p.ghost -= dt;
@@ -911,6 +959,103 @@ export class Planes {
     if (hit > car.impact) { car.impact = hit; car.impactKind = 6; }
   }
 
+  // ------------------------------------------------------- the player's aircraft
+  // info: { x, z, y (above the field), heading, span, len, ri (runway she's on, or -1), ground } or null.
+  setPlayer(info) {
+    if (this.disabled) return;
+    if (!info) {
+      if (this.player) for (const o of this.occ) o.delete(this.player);
+      this.player = null; this.playerClaim = -1;
+      return;
+    }
+    const p = this.player || (this.player = { state: 'player', T: { span: 0, len: 0, dia: 4, fin: 10 }, v: 0, id: -1 });
+    p.x = info.x; p.z = info.z; p.y = info.y; p.heading = info.heading; p.T.span = info.span; p.T.len = info.len; p.ground = info.ground;
+    for (let ri = 0; ri < this.occ.length; ri++) {
+      if ((info.ri === ri && info.y < 30) || this.playerClaim === ri) this.occ[ri].add(p);
+      else this.occ[ri].delete(p);
+    }
+  }
+
+  // Clear the way for the player's aircraft: airliners moving on the ground near (x, z) are taken away.
+  clearAround(x, z, r) {
+    if (this.disabled) return;
+    for (const p of this.planes.slice()) {
+      if (p.state === 'parked' || p.y > 3) continue;
+      if (Math.hypot(p.x - x, p.z - z) < r + p.T.span / 2) this._remove(p);
+    }
+  }
+
+  // The player's taxi route (pts [[x, z]...]) for a jet of span `span`: any
+  // airliner parked so close its wings or tail would overlap it is towed away
+  // and its stand kept free while the player's about.
+  clearRoute(pts, span) {
+    if (this.disabled || !pts || pts.length < 2) return 0;
+    this.playerToken = this.playerToken || { player: true };
+    // Kept while the player taxis: nothing parks beside it later either (see _park).
+    this.playerRoute = { pts, span };
+    const near = (x, z, reach) => polyNear(pts, x, z, reach);
+    let n = 0;
+    for (const p of this.planes.slice()) {
+      if (p.state !== 'parked' || !near(p.x, p.z, this._routeReach(p.T, span))) continue;
+      const st = p.stand;
+      this._remove(p);
+      if (st && !st.reserved) st.reserved = this.playerToken;
+      n++;
+    }
+    // Stands along the route: booked for the player; an airliner on its way to one goes elsewhere.
+    for (const st of this.stands) {
+      const reach = TYPES.wide.len / 2 + 2 + span / 2 + 16;
+      const cx = st.ex - st.fx * (TYPES.narrow.len / 2 + 2), cz = st.ez - st.fz * (TYPES.narrow.len / 2 + 2);
+      if (!near(cx, cz, reach)) continue;
+      const q = st.reserved && st.reserved !== this.playerToken ? st.reserved : null;
+      if (q && q.state === 'approach') {
+        const alt = this.stands.find((o) => !o.occupant && !o.reserved && o !== st);
+        if (alt) { q.stand = alt; alt.reserved = q; this._fitType(q, alt); } else { q.stand = null; }
+      } else if (q) this._remove(q);
+      st.reserved = this.playerToken;
+    }
+    this.lastClear = { n, t: +(performance.now() / 1000).toFixed(1) };
+    return n;
+  }
+
+  // Cleared for takeoff or to land: the runway is the player's until released.
+  claimRunway(ri, on) { this.playerClaim = on ? ri : -1; }
+
+  // Would the tower hold the player short of runway ri (traffic on it or landing soon)?
+  runwayBusy(ri) {
+    if (this.disabled) return false;
+    const p = this.player || { state: 'player', x: 0, z: 0, y: 0, heading: 0, T: { span: 0, len: 0 } };
+    return !this._canEnter(p, ri, true);
+  }
+
+  // Stands near (ex, ez) with an airliner on them (or booked) within a wingspan.
+  standBusy(ex, ez, span) {
+    if (this.disabled) return false;
+    for (const st of this.stands) {
+      const d = Math.hypot(st.ex - ex, st.ez - ez);
+      if (d > span * 0.6 + 4) continue;
+      if (st.occupant || (st.reserved && st.reserved !== this.playerToken)) return true;
+    }
+    return false;
+  }
+
+  // Keep airliners off the player's stand and its neighbours (wingtip room).
+  reserveStand(ex, ez, span) {
+    if (this.disabled) return;
+    this.playerToken = this.playerToken || { player: true };
+    for (const st of this.stands) if (Math.hypot(st.ex - ex, st.ez - ez) < span * 0.6 + 4 && !st.occupant && !st.reserved) st.reserved = this.playerToken;
+  }
+
+  releaseStands() {
+    this.playerRoute = null;
+    if (this.disabled || !this.playerToken) return;
+    for (const st of this.stands) if (st.reserved === this.playerToken) st.reserved = null;
+  }
+
+  // How close a parked airliner of type T may be to the player's route (centre to
+  // the line): both half-sizes, plus room for cutting corners and wandering off it.
+  _routeReach(T, span) { return Math.max(T.span, T.len) / 2 + span / 2 + 16; }
+
   stats() {
     const c = {};
     for (const p of this.planes) c[p.state] = (c[p.state] || 0) + 1;
@@ -920,7 +1065,7 @@ export class Planes {
 
 // =============================================================== paths
 // 2D ground path with arc length, sampling and bend lookahead.
-function makeGroundPath(pts, nodes = null) {
+export function makeGroundPath(pts, nodes = null) {
   const s = [0];
   for (let i = 1; i < pts.length; i++) s.push(s[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]));
   const length = s[s.length - 1];
@@ -961,7 +1106,7 @@ function makeGroundPath(pts, nodes = null) {
 }
 
 // 3D flight path [x, y, z, speed] with arc length.
-function makeAirPath(pts) {
+export function makeAirPath(pts) {
   const s = [0];
   for (let i = 1; i < pts.length; i++) s.push(s[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1], pts[i][2] - pts[i - 1][2]));
   const length = s[s.length - 1];
@@ -980,4 +1125,15 @@ function makeAirPath(pts) {
 function shuffle(a) {
   for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; }
   return a;
+}
+
+// Is (x, z) within reach of the polyline [[x, z], ...]?
+function polyNear(pts, x, z, reach) {
+  for (let i = 0; i + 1 < pts.length; i++) {
+    const [ax, az] = pts[i], [bx, bz] = pts[i + 1];
+    const dx = bx - ax, dz = bz - az, l2 = dx * dx + dz * dz || 1;
+    const t = clamp(((x - ax) * dx + (z - az) * dz) / l2, 0, 1);
+    if (Math.hypot(x - ax - dx * t, z - az - dz * t) <= reach) return true;
+  }
+  return false;
 }
